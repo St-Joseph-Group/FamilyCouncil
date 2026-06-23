@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
+import UpdateNotificationModal from '../UpdateNotificationModal';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -54,6 +55,7 @@ export default function AppLayout({ children, currentPath, onNavigate }: Props) 
 
   return (
     <div className="min-h-screen bg-slate-950">
+      <UpdateNotificationModal />
       <Sidebar
         currentPath={currentPath}
         onNavigate={onNavigate}
