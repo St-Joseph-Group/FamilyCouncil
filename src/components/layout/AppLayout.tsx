@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 import UpdateNotificationModal from '../UpdateNotificationModal';
+import IdleTimeoutModal from '../IdleTimeoutModal';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -56,6 +57,7 @@ export default function AppLayout({ children, currentPath, onNavigate }: Props) 
   return (
     <div className="min-h-screen bg-slate-950">
       <UpdateNotificationModal />
+      <IdleTimeoutModal />
       <Sidebar
         currentPath={currentPath}
         onNavigate={onNavigate}
