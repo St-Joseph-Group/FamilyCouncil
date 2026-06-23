@@ -45,6 +45,11 @@ function getPHDay(dateStr: string) {
   return new Date(dateStr).toLocaleString('en-PH', { timeZone: PH_TZ, day: 'numeric' });
 }
 
+function phInputToUTC(localDateStr: string) {
+  const utc = new Date(localDateStr + ':00+08:00');
+  return utc.toISOString();
+}
+
 export default function MeetingsPage() {
   const { user, hasPermission } = useAuth();
   const [meetings, setMeetings] = useState<Meeting[]>([]);
@@ -100,11 +105,12 @@ export default function MeetingsPage() {
   async function handleSave() {
     if (!form.title || !form.meeting_date) return;
     setSaving(true);
+    const payload = { ...form, meeting_date: phInputToUTC(form.meeting_date) };
     if (editingMeeting) {
-      await supabase.from('meetings').update({ ...form, updated_at: new Date().toISOString() }).eq('id', editingMeeting.id);
+      await supabase.from('meetings').update({ ...payload, updated_at: new Date().toISOString() }).eq('id', editingMeeting.id);
       await logAuditEvent(user?.id || null, 'update', 'meetings', editingMeeting.id, 'meeting', { title: form.title });
     } else {
-      const { data } = await supabase.from('meetings').insert({ ...form, created_by: user?.id }).select().maybeSingle();
+      const { data } = await supabase.from('meetings').insert({ ...payload, created_by: user?.id }).select().maybeSingle();
       if (data) await logAuditEvent(user?.id || null, 'create', 'meetings', data.id, 'meeting', { title: form.title });
     }
     await fetchMeetings();
