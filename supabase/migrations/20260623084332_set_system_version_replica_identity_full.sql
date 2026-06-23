@@ -1,0 +1,1 @@
+ALTER TABLE system_version REPLICA IDENTITY FULL;
