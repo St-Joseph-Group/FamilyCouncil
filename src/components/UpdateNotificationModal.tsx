@@ -54,7 +54,7 @@ export default function UpdateNotificationModal() {
           </div>
           <h3 className="text-white font-semibold text-lg mb-3">System Update Available</h3>
           <p className="text-slate-300 text-sm leading-relaxed">
-            There is an update to the system. Click OK to refresh the page to see the new updates.
+            There is an update in the system. Click OK to refresh the page to see the new update.
           </p>
         </div>
         <div className="px-8 pb-8">
