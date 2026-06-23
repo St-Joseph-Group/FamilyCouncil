@@ -1,26 +1,11 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 
 export default function UpdateNotificationModal() {
   const [show, setShow] = useState(false);
-  const [initialVersion, setInitialVersion] = useState<string | null>(null);
 
   useEffect(() => {
-    supabase
-      .from('system_version')
-      .select('version')
-      .order('published_at', { ascending: false })
-      .limit(1)
-      .maybeSingle()
-      .then(({ data }) => {
-        if (data) setInitialVersion(data.version);
-      });
-  }, []);
-
-  useEffect(() => {
-    if (!initialVersion) return;
-
     const channel = supabase
       .channel('system-version-updates')
       .on(
@@ -31,17 +16,12 @@ export default function UpdateNotificationModal() {
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'system_version' },
-        (payload) => {
-          const newVersion = (payload.new as { version?: string })?.version;
-          if (newVersion && newVersion !== initialVersion) {
-            setShow(true);
-          }
-        }
+        () => setShow(true)
       )
       .subscribe();
 
     return () => { supabase.removeChannel(channel); };
-  }, [initialVersion]);
+  }, []);
 
   if (!show) return null;
 
