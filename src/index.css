@@ -70,3 +70,99 @@
 button, a {
   transition-property: background-color, border-color, opacity, color, transform, box-shadow;
 }
+
+/* Bot message HTML content styling */
+.bot-message-content {
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.bot-message-content p {
+  margin: 0.4em 0;
+}
+
+.bot-message-content p:first-child {
+  margin-top: 0;
+}
+
+.bot-message-content p:last-child {
+  margin-bottom: 0;
+}
+
+.bot-message-content b,
+.bot-message-content strong {
+  font-weight: 600;
+  color: inherit;
+}
+
+.bot-message-content ul,
+.bot-message-content ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+
+.bot-message-content ul {
+  list-style: disc;
+}
+
+.bot-message-content ol {
+  list-style: decimal;
+}
+
+.bot-message-content li {
+  margin: 0.25em 0;
+}
+
+.bot-message-content h1,
+.bot-message-content h2,
+.bot-message-content h3,
+.bot-message-content h4 {
+  font-weight: 600;
+  margin: 0.75em 0 0.35em;
+}
+
+.bot-message-content h1 { font-size: 1.2em; }
+.bot-message-content h2 { font-size: 1.1em; }
+.bot-message-content h3 { font-size: 1.05em; }
+
+.bot-message-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75em 0;
+  font-size: 0.9em;
+}
+
+.bot-message-content th,
+.bot-message-content td {
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  padding: 0.4em 0.6em;
+  text-align: left;
+}
+
+.bot-message-content th {
+  background: rgba(255, 255, 255, 0.05);
+  font-weight: 600;
+}
+
+.bot-message-content tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.bot-message-content a {
+  color: #60a5fa;
+  text-decoration: underline;
+}
+
+.bot-message-content a:hover {
+  color: #93c5fd;
+}
+
+.bot-message-content br {
+  display: block;
+  content: "";
+  margin: 0.2em 0;
+}
+
+.bot-message-content div {
+  margin: 0.4em 0;
+}

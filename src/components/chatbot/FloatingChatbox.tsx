@@ -618,7 +618,11 @@ export default function FloatingChatbox() {
                                     ? 'bg-amber-500/10 border border-amber-500/20 text-amber-200 rounded-tl-sm'
                                     : 'bg-slate-700 text-slate-200 border border-white/5 rounded-tl-sm'
                               }`}>
-                                {msg.content}
+                                {msg.sender_type === 'bot' || msg.sender_type === 'user' ? (
+                                  <div className="bot-message-content" dangerouslySetInnerHTML={{ __html: msg.content }} />
+                                ) : (
+                                  msg.content
+                                )}
                               </div>
                               <div className={`flex items-center gap-1 ${msg.sender_type === 'admin' ? 'flex-row-reverse' : ''}`}>
                                 <span className="text-slate-600 text-[10px]">{formatMessageTime(msg.created_at)}</span>

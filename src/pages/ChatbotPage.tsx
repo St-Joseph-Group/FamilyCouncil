@@ -506,7 +506,11 @@ export default function ChatbotPage() {
                               ? 'bg-amber-500/10 border border-amber-500/20 text-amber-200 rounded-tl-sm'
                               : 'bg-slate-700 text-slate-200 border border-white/5 rounded-tl-sm'
                         }`}>
-                          {msg.content}
+                          {msg.sender_type === 'bot' || msg.sender_type === 'user' ? (
+                            <div className="bot-message-content" dangerouslySetInnerHTML={{ __html: msg.content }} />
+                          ) : (
+                            msg.content
+                          )}
                           {msg.attachment_url && (
                             <a href={msg.attachment_url} target="_blank" rel="noopener noreferrer" className="block mt-2 text-blue-300 underline text-xs">
                               {msg.attachment_type || 'Attachment'}
