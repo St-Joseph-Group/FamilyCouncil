@@ -56,6 +56,11 @@ function formatMessageTime(dateStr: string) {
   return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${time}`;
 }
 
+function stripHtml(html: string): string {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  return doc.body.textContent || '';
+}
+
 function formatListTime(dateStr: string) {
   const d = new Date(dateStr);
   const now = new Date();
@@ -519,7 +524,7 @@ export default function FloatingChatbox() {
                                 </div>
                                 <p className="text-slate-400 text-xs truncate mt-0.5">
                                   {convo.lastMessage
-                                    ? convo.lastMessage.content.slice(0, 50)
+                                    ? stripHtml(convo.lastMessage.content).slice(0, 50)
                                     : 'No messages yet'}
                                 </p>
                               </div>
