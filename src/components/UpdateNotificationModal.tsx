@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
-import { supabase } from '../lib/supabase';
 
-const POLL_INTERVAL_MS = 10_000;
+const POLL_INTERVAL_MS = 15_000;
 
 export default function UpdateNotificationModal() {
   const [show, setShow] = useState(false);
@@ -13,18 +12,19 @@ export default function UpdateNotificationModal() {
     let interval: ReturnType<typeof setInterval> | null = null;
     let cancelled = false;
 
-    async function fetchLatestVersion() {
-      const { data } = await supabase
-        .from('system_version')
-        .select('version')
-        .order('published_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      return data?.version ?? null;
+    async function fetchVersion(): Promise<string | null> {
+      try {
+        const res = await fetch('/version.json?t=' + Date.now());
+        if (!res.ok) return null;
+        const data = await res.json();
+        return data?.version ?? null;
+      } catch {
+        return null;
+      }
     }
 
     async function init() {
-      const version = await fetchLatestVersion();
+      const version = await fetchVersion();
       if (cancelled) return;
       initialVersionRef.current = version;
       initializedRef.current = true;
@@ -32,7 +32,7 @@ export default function UpdateNotificationModal() {
 
     async function poll() {
       if (!initializedRef.current) return;
-      const version = await fetchLatestVersion();
+      const version = await fetchVersion();
       if (cancelled) return;
       if (version && version !== initialVersionRef.current) {
         setShow(true);
@@ -42,34 +42,9 @@ export default function UpdateNotificationModal() {
     init();
     interval = setInterval(poll, POLL_INTERVAL_MS);
 
-    const channel = supabase
-      .channel('system-version-updates')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'system_version' },
-        (payload) => {
-          const newVersion = (payload.new as { version?: string })?.version;
-          if (newVersion && newVersion !== initialVersionRef.current) {
-            setShow(true);
-          }
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'system_version' },
-        (payload) => {
-          const newVersion = (payload.new as { version?: string })?.version;
-          if (newVersion && newVersion !== initialVersionRef.current) {
-            setShow(true);
-          }
-        }
-      )
-      .subscribe();
-
     return () => {
       cancelled = true;
       if (interval) clearInterval(interval);
-      supabase.removeChannel(channel);
     };
   }, []);
 
