@@ -113,9 +113,15 @@ export default function ChatbotPage() {
     }
   }
 
+  const isAdmin = isSuperAdmin() || role?.name === 'council_admin';
+
   async function fetchChatLogs() {
     setLoading(true);
-    const { data } = await supabase.from('chat_logs').select('*').order('started_at', { ascending: false });
+    let query = supabase.from('chat_logs').select('*').order('started_at', { ascending: false });
+    if (!isAdmin && user?.id) {
+      query = query.eq('participant_id', user.id);
+    }
+    const { data } = await query;
     setChatLogs(data || []);
     if (data && data.length > 0 && !selectedLog) setSelectedLog(data[0]);
     setLoading(false);
