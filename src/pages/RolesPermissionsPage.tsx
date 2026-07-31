@@ -46,7 +46,7 @@ const ACTION_LABELS: Record<string, string> = {
 type TabId = 'navigation' | 'crud';
 
 export default function RolesPermissionsPage() {
-  const { user } = useAuth();
+  const { user, isSuperAdmin } = useAuth();
   const [roles, setRoles] = useState<RoleWithPermissions[]>([]);
   const [allPermissions, setAllPermissions] = useState<Permission[]>([]);
   const [loading, setLoading] = useState(true);
@@ -71,7 +71,9 @@ export default function RolesPermissionsPage() {
       supabase.from('permissions').select('*').order('module').order('action'),
     ]);
 
-    const rolesData = rolesRes.data || [];
+    const rolesData = (rolesRes.data || []).filter(
+      (r: { name: string }) => isSuperAdmin() || r.name !== 'super_admin'
+    );
     const permsData = permsRes.data || [];
     setAllPermissions(permsData);
 
