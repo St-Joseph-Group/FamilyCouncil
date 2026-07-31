@@ -22,24 +22,54 @@ import { Shield, Loader2 } from 'lucide-react';
 
 type AuthScreen = 'login' | 'forgot-password';
 
+const NAV_ORDER: { module: string; path: string }[] = [
+  { module: 'dashboard', path: '/dashboard' },
+  { module: 'council_records', path: '/records' },
+  { module: 'meetings', path: '/meetings' },
+  { module: 'chatbot', path: '/chatbot' },
+  { module: 'notifications', path: '/notifications' },
+  { module: 'announcements', path: '/config/announcements' },
+  { module: 'members', path: '/config/members' },
+  { module: 'audit_logs', path: '/config/audit' },
+  { module: 'roles', path: '/config/roles' },
+  { module: 'chatbot_setup', path: '/config/chatbot' },
+  { module: 'smtp_settings', path: '/config/smtp' },
+];
+
 function AppInner() {
-  const { user, loading, session } = useAuth();
+  const { user, loading, session, role, hasPermission, isSuperAdmin } = useAuth();
   const [authScreen, setAuthScreen] = useState<AuthScreen>('login');
-  const [currentPath, setCurrentPath] = useState('/dashboard');
+  const [currentPath, setCurrentPath] = useState('');
+  const [hasRedirected, setHasRedirected] = useState(false);
 
   useEffect(() => {
     if (session) {
       const hash = window.location.hash;
       if (hash.includes('type=recovery')) {
         setCurrentPath('/change-password');
+        setHasRedirected(true);
       }
     }
   }, [session]);
 
-  // Reset to dashboard on sign-out so next login always lands on dashboard
+  // After login, redirect to the first page the user is allowed to see
+  useEffect(() => {
+    if (user && role && !hasRedirected) {
+      if (isSuperAdmin()) {
+        setCurrentPath('/dashboard');
+      } else {
+        const firstAllowed = NAV_ORDER.find((n) => hasPermission(n.module, 'navigate'));
+        setCurrentPath(firstAllowed?.path || '/dashboard');
+      }
+      setHasRedirected(true);
+    }
+  }, [user, role, hasRedirected]);
+
+  // Reset on sign-out so next login recalculates
   useEffect(() => {
     if (!user && !loading) {
-      setCurrentPath('/dashboard');
+      setCurrentPath('');
+      setHasRedirected(false);
     }
   }, [user, loading]);
 
