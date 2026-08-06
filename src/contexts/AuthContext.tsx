@@ -10,6 +10,9 @@ interface AuthContextType {
   permissions: Permission[];
   session: Session | null;
   loading: boolean;
+  // true once the role's permission set has actually been fetched; until then
+  // hasPermission() answers false for everything and must not be trusted
+  permissionsLoaded: boolean;
   forcedLogoutMessage: string | null;
   clearForcedLogoutMessage: () => void;
   signIn: (emailOrUsername: string, password: string) => Promise<{ error: string | null }>;
@@ -30,6 +33,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [permissions, setPermissions] = useState<Permission[]>([]);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
+  const [permissionsLoaded, setPermissionsLoaded] = useState(false);
   const [forcedLogoutMessage, setForcedLogoutMessage] = useState<string | null>(null);
   const channelRef = useRef<RealtimeChannel | null>(null);
   const userRef = useRef<User | null>(null);
@@ -63,6 +67,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setPermissions([]);
       }
     }
+
+    // set last: anything gated on permissions waits for this, so it must not
+    // flip until the role_permissions query above has resolved
+    setPermissionsLoaded(true);
   }, []);
 
   useEffect(() => {
@@ -93,6 +101,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setProfile(null);
         setRole(null);
         setPermissions([]);
+        setPermissionsLoaded(false);
       }
     });
 
@@ -248,7 +257,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, profile, role, permissions, session, loading, forcedLogoutMessage, clearForcedLogoutMessage, signIn, signOut, resetPassword, updatePassword, refreshProfile, hasPermission, isSuperAdmin }}
+      value={{ user, profile, role, permissions, session, loading, permissionsLoaded, forcedLogoutMessage, clearForcedLogoutMessage, signIn, signOut, resetPassword, updatePassword, refreshProfile, hasPermission, isSuperAdmin }}
     >
       {children}
     </AuthContext.Provider>
