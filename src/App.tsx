@@ -18,9 +18,15 @@ import ChatbotSetupPage from './pages/config/ChatbotSetupPage';
 import SmtpSettingsPage from './pages/config/SmtpSettingsPage';
 import FloatingChatbox from './components/chatbot/FloatingChatbox';
 import { supabase } from './lib/supabase';
-import { Shield, Loader2 } from 'lucide-react';
+import { Shield, Loader2, ShieldAlert } from 'lucide-react';
 
 type AuthScreen = 'login' | 'forgot-password';
+
+// Shown when a user has no navigable page at all, or lands on one they cannot access.
+const NO_ACCESS = '/no-access';
+
+// Reachable regardless of role — every signed-in user owns these.
+const ALWAYS_ALLOWED = ['/profile', '/change-password'];
 
 const NAV_ORDER: { module: string; path: string }[] = [
   { module: 'dashboard', path: '/dashboard' },
@@ -36,8 +42,13 @@ const NAV_ORDER: { module: string; path: string }[] = [
   { module: 'smtp_settings', path: '/config/smtp' },
 ];
 
+const PATH_TO_MODULE: Record<string, string> = NAV_ORDER.reduce(
+  (acc, n) => ({ ...acc, [n.path]: n.module }),
+  { '/config': 'announcements' } as Record<string, string>
+);
+
 function AppInner() {
-  const { user, loading, session, role, hasPermission, isSuperAdmin } = useAuth();
+  const { user, loading, session, role, permissionsLoaded, hasPermission, isSuperAdmin } = useAuth();
   const [authScreen, setAuthScreen] = useState<AuthScreen>('login');
   const [currentPath, setCurrentPath] = useState('');
   const [hasRedirected, setHasRedirected] = useState(false);
@@ -52,18 +63,21 @@ function AppInner() {
     }
   }, [session]);
 
-  // After login, redirect to the first page the user is allowed to see
+  // After login, redirect to the first page the user is allowed to see.
+  // Waits on permissionsLoaded: `role` is set before the role_permissions query
+  // resolves, and redirecting on an empty permission set lands everyone on the
+  // dashboard regardless of whether they can access it.
   useEffect(() => {
-    if (user && role && !hasRedirected) {
+    if (user && role && permissionsLoaded && !hasRedirected) {
       if (isSuperAdmin()) {
         setCurrentPath('/dashboard');
       } else {
         const firstAllowed = NAV_ORDER.find((n) => hasPermission(n.module, 'navigate'));
-        setCurrentPath(firstAllowed?.path || '/dashboard');
+        setCurrentPath(firstAllowed?.path || NO_ACCESS);
       }
       setHasRedirected(true);
     }
-  }, [user, role, hasRedirected]);
+  }, [user, role, permissionsLoaded, hasRedirected]);
 
   // Reset on sign-out so next login recalculates
   useEffect(() => {
@@ -116,7 +130,31 @@ function AppInner() {
     return <LoginPage onForgotPassword={() => setAuthScreen('forgot-password')} />;
   }
 
+  function canAccess(path: string) {
+    if (ALWAYS_ALLOWED.includes(path)) return true;
+    if (isSuperAdmin()) return true;
+    const module = PATH_TO_MODULE[path];
+    return module ? hasPermission(module, 'navigate') : false;
+  }
+
   function renderPage() {
+    // Belt and braces: the sidebar already hides these, but direct navigation
+    // (or a stale currentPath after a role change) must not render the page.
+    if (!canAccess(currentPath)) {
+      return (
+        <div className="flex flex-col items-center justify-center py-20 text-center">
+          <div className="w-14 h-14 bg-red-500/20 rounded-full flex items-center justify-center mb-4">
+            <ShieldAlert className="w-7 h-7 text-red-400" />
+          </div>
+          <h3 className="text-white font-semibold text-lg mb-2">No access</h3>
+          <p className="text-slate-400 text-sm max-w-sm">
+            You do not have permission to view this page. Contact an administrator if you
+            believe this is a mistake.
+          </p>
+        </div>
+      );
+    }
+
     switch (currentPath) {
       case '/dashboard': return <DashboardPage />;
       case '/records': return <CouncilRecordsPage />;
@@ -140,6 +178,24 @@ function AppInner() {
       case '/config/smtp': return <SmtpSettingsPage />;
       default: return <DashboardPage />;
     }
+  }
+
+  // currentPath is only decided once permissions are known; rendering before that
+  // would briefly show the dashboard to users who cannot access it.
+  if (!hasRedirected) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-emerald-500 rounded-2xl flex items-center justify-center animate-pulse">
+            <Shield className="w-8 h-8 text-white" />
+          </div>
+          <div className="flex items-center gap-2 text-slate-400">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            <span>Loading...</span>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
