@@ -175,18 +175,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     let email = emailOrUsername;
 
     if (!emailOrUsername.includes('@')) {
-      const { data: profileData } = await supabase
-        .from('profiles')
-        .select('email')
-        .eq('username', emailOrUsername)
-        .maybeSingle();
-      if (profileData) email = profileData.email;
+      // profiles is not readable pre-authentication; resolve via SECURITY DEFINER rpc
+      const { data: lookupEmail } = await supabase.rpc('get_email_by_username', {
+        lookup_username: emailOrUsername,
+      });
+      if (lookupEmail) email = lookupEmail as string;
     }
 
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
     if (error) {
-      await logAuditEvent(null, 'login_failed', 'auth', emailOrUsername, 'user', { reason: error.message });
+      // no session yet, so audit_logs is not writable directly; use the SECURITY DEFINER rpc
+      await supabase.rpc('log_failed_login', {
+        identifier: emailOrUsername,
+        reason: error.message,
+      });
       return { error: error.message };
     }
 

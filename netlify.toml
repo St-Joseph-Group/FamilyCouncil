@@ -1,0 +1,10 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# Single-page app: routing is client-side, and Supabase password recovery
+# returns to a hashed URL, so every path must serve index.html.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
