@@ -53,6 +53,7 @@ export default function RolesPermissionsPage() {
   const [selectedRole, setSelectedRole] = useState<RoleWithPermissions | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
   const [newRoleName, setNewRoleName] = useState('');
   const [newRoleDisplay, setNewRoleDisplay] = useState('');
   const [newRoleDesc, setNewRoleDesc] = useState('');
@@ -122,12 +123,34 @@ export default function RolesPermissionsPage() {
   async function savePermissions() {
     if (!selectedRole) return;
     setSaving(true);
-    await supabase.from('role_permissions').delete().eq('role_id', selectedRole.id);
-    if (editingPerms.size > 0) {
-      const inserts = Array.from(editingPerms).map((permId) => ({ role_id: selectedRole.id, permission_id: permId }));
-      await supabase.from('role_permissions').insert(inserts);
+    setSaveError('');
+
+    // Single atomic rpc. Doing this as delete-then-insert from the client wiped
+    // the role when an admin edited their own: the delete removed the very
+    // permission authorising the insert, which was then rejected.
+    const { error: permsError } = await supabase.rpc('set_role_permissions', {
+      target_role_id: selectedRole.id,
+      permission_ids: Array.from(editingPerms),
+    });
+
+    if (permsError) {
+      setSaveError(permsError.message);
+      setSaving(false);
+      return;
     }
-    await supabase.from('roles').update({ is_full_pledge: editingFullPledge }).eq('id', selectedRole.id);
+
+    const { error: roleError } = await supabase
+      .from('roles')
+      .update({ is_full_pledge: editingFullPledge })
+      .eq('id', selectedRole.id);
+
+    if (roleError) {
+      setSaveError(roleError.message);
+      setSaving(false);
+      await fetchData();
+      return;
+    }
+
     await logAuditEvent(user?.id || null, 'update_permissions', 'roles', selectedRole.id, 'role', {
       role_name: selectedRole.name, is_full_pledge: editingFullPledge, tab: activeTab,
     });
@@ -240,6 +263,13 @@ export default function RolesPermissionsPage() {
                     Save
                   </button>
                 </div>
+
+                {saveError && (
+                  <div className="mx-5 mt-4 flex items-start gap-2 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3 text-red-400 text-sm">
+                    <X className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                    <span>{saveError}</span>
+                  </div>
+                )}
 
                 {selectedRole.name === 'super_admin' ? (
                   <div className="p-6 text-center">
