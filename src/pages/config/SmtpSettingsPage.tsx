@@ -94,12 +94,24 @@ export default function SmtpSettingsPage() {
     setTesting(true);
     setTestResult(null);
 
+    // The function authenticates the caller now, so it needs the user's token
+    // rather than the anon key. Sending the form's own values (not the saved
+    // row) is intentional: an admin has to be able to test before saving.
+    const { data: sessionData } = await supabase.auth.getSession();
+    const accessToken = sessionData?.session?.access_token;
+
+    if (!accessToken) {
+      setTestResult({ success: false, message: 'Session expired. Please reload and try again.' });
+      setTesting(false);
+      return;
+    }
+
     try {
       const res = await fetch(SMTP_SERVICE_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+          'Authorization': `Bearer ${accessToken}`,
         },
         body: JSON.stringify({
           action: 'test',

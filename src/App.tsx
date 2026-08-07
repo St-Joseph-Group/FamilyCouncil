@@ -19,7 +19,7 @@ import SmtpSettingsPage from './pages/config/SmtpSettingsPage';
 import FloatingChatbox from './components/chatbot/FloatingChatbox';
 import ErrorBoundary from './components/ErrorBoundary';
 import { supabase } from './lib/supabase';
-import { Shield, Loader2, ShieldAlert } from 'lucide-react';
+import { Shield, Loader2, ShieldAlert, RefreshCw } from 'lucide-react';
 
 type AuthScreen = 'login' | 'forgot-password';
 
@@ -49,7 +49,7 @@ const PATH_TO_MODULE: Record<string, string> = NAV_ORDER.reduce(
 );
 
 function AppInner() {
-  const { user, loading, session, role, permissionsLoaded, hasPermission, isSuperAdmin } = useAuth();
+  const { user, loading, session, role, permissionsLoaded, profileError, refreshProfile, signOut, hasPermission, isSuperAdmin } = useAuth();
   const [authScreen, setAuthScreen] = useState<AuthScreen>('login');
   const [currentPath, setCurrentPath] = useState('');
   const [hasRedirected, setHasRedirected] = useState(false);
@@ -193,6 +193,43 @@ function AppInner() {
       case '/config/smtp': return <SmtpSettingsPage />;
       default: return <DashboardPage />;
     }
+  }
+
+  // A load that failed will never produce permissions, so the spinner below
+  // would never end. Only applies before the first successful load: a failed
+  // background refresh must not throw away a session that is already working.
+  if (!hasRedirected && profileError) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
+        <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-8 max-w-md w-full text-center">
+          <div className="w-14 h-14 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+            <ShieldAlert className="w-7 h-7 text-red-400" />
+          </div>
+          <h1 className="text-white font-semibold text-lg mb-2">Could not load your account</h1>
+          <p className="text-slate-400 text-sm mb-1">
+            You are signed in, but your profile and permissions could not be read, so there
+            is nothing safe to show yet.
+          </p>
+          <p className="text-slate-500 text-xs mb-6 break-words">{profileError}</p>
+
+          <div className="flex gap-2">
+            <button
+              onClick={() => refreshProfile()}
+              className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-gradient-to-r from-blue-500 to-emerald-500 text-white rounded-xl text-sm font-medium"
+            >
+              <RefreshCw className="w-4 h-4" />
+              Try again
+            </button>
+            <button
+              onClick={() => signOut()}
+              className="flex-1 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 text-white rounded-xl text-sm font-medium transition-all"
+            >
+              Sign out
+            </button>
+          </div>
+        </div>
+      </div>
+    );
   }
 
   // currentPath is only decided once permissions are known; rendering before that

@@ -11,8 +11,13 @@ interface AuthContextType {
   session: Session | null;
   loading: boolean;
   // true once the role's permission set has actually been fetched; until then
-  // hasPermission() answers false for everything and must not be trusted
+  // hasPermission() answers false for everything and must not be trusted.
+  // Never set when a read failed: "loaded and empty" and "failed" must not look
+  // the same, or a transient failure reads as a user with no permissions.
   permissionsLoaded: boolean;
+  // set when the profile or permission load could not be completed, so callers
+  // can offer a retry instead of waiting forever on state that will never arrive
+  profileError: string | null;
   forcedLogoutMessage: string | null;
   clearForcedLogoutMessage: () => void;
   signIn: (emailOrUsername: string, password: string) => Promise<{ error: string | null }>;
@@ -37,6 +42,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const [permissionsLoaded, setPermissionsLoaded] = useState(false);
+  const [profileError, setProfileError] = useState<string | null>(null);
   const [forcedLogoutMessage, setForcedLogoutMessage] = useState<string | null>(null);
   const channelRef = useRef<RealtimeChannel | null>(null);
   const userRef = useRef<User | null>(null);
@@ -46,46 +52,72 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   roleRef.current = role;
 
   const loadProfile = useCallback(async (userId: string) => {
-    const { data: profileData } = await supabase
+    const { data: profileData, error: profileErr } = await supabase
       .from('profiles')
       .select('*, role:roles(*)')
       .eq('id', userId)
       .maybeSingle();
 
-    if (profileData) {
-      setProfile(profileData as Profile);
-      const roleData = (profileData as Profile & { role: Role }).role;
-      setRole(roleData || null);
-
-      if (roleData) {
-        const { data: permsData } = await supabase
-          .from('role_permissions')
-          .select('permission:permissions(*)')
-          .eq('role_id', roleData.id);
-
-        if (permsData) {
-          setPermissions(permsData.map((rp: { permission: Permission }) => rp.permission));
-        }
-      } else {
-        setPermissions([]);
-      }
+    // Both of these used to fall through to setPermissionsLoaded(true) with role
+    // still null, which left App on its full-screen spinner with no retry and no
+    // way out: the sidebar is not rendered, so there is not even a Sign Out.
+    if (profileErr) {
+      setProfileError(profileErr.message);
+      return;
     }
 
+    if (!profileData) {
+      setProfileError('No profile is set up for this account yet. Contact an administrator.');
+      return;
+    }
+
+    setProfile(profileData as Profile);
+    const roleData = (profileData as Profile & { role: Role }).role;
+    setRole(roleData || null);
+
+    if (roleData) {
+      const { data: permsData, error: permsErr } = await supabase
+        .from('role_permissions')
+        .select('permission:permissions(*)')
+        .eq('role_id', roleData.id);
+
+      // Returning here leaves permissionsLoaded false on purpose. Releasing it
+      // with an empty set sent users who do have rights to /no-access, because
+      // the redirect could not tell a failed read from a role with nothing.
+      if (permsErr) {
+        setProfileError(permsErr.message);
+        return;
+      }
+
+      setPermissions((permsData || []).map((rp: { permission: Permission }) => rp.permission));
+    } else {
+      setPermissions([]);
+    }
+
+    setProfileError(null);
     // set last: anything gated on permissions waits for this, so it must not
     // flip until the role_permissions query above has resolved
     setPermissionsLoaded(true);
   }, []);
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-      if (session?.user) {
-        loadProfile(session.user.id).finally(() => setLoading(false));
-      } else {
+    supabase.auth.getSession()
+      .then(({ data: { session } }) => {
+        setSession(session);
+        setUser(session?.user ?? null);
+        if (session?.user) {
+          loadProfile(session.user.id).finally(() => setLoading(false));
+        } else {
+          setLoading(false);
+        }
+      })
+      // Without this, a rejected getSession() skipped setLoading(false)
+      // entirely and pinned the app on its loading screen one step earlier.
+      .catch((err) => {
+        console.error('[auth] could not read the stored session', err);
+        setProfileError(err instanceof Error ? err.message : 'Could not read the stored session.');
         setLoading(false);
-      }
-    });
+      });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setSession(session);
@@ -105,6 +137,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setRole(null);
         setPermissions([]);
         setPermissionsLoaded(false);
+        setProfileError(null);
       }
     });
 
@@ -275,7 +308,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, profile, role, permissions, session, loading, permissionsLoaded, forcedLogoutMessage, clearForcedLogoutMessage, signIn, signOut, resetPassword, updatePassword, refreshProfile, hasPermission, isSuperAdmin }}
+      value={{ user, profile, role, permissions, session, loading, permissionsLoaded, profileError, forcedLogoutMessage, clearForcedLogoutMessage, signIn, signOut, resetPassword, updatePassword, refreshProfile, hasPermission, isSuperAdmin }}
     >
       {children}
     </AuthContext.Provider>
