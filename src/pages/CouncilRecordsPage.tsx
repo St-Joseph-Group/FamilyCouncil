@@ -24,6 +24,7 @@ export default function CouncilRecordsPage() {
   const { user, hasPermission } = useAuth();
   const [records, setRecords] = useState<CouncilRecord[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
   const [showModal, setShowModal] = useState(false);
@@ -53,11 +54,23 @@ export default function CouncilRecordsPage() {
 
   async function fetchRecords() {
     setLoading(true);
-    const { data } = await supabase
+    // council_records has two FKs to profiles (created_by, updated_by), so a bare
+    // profiles(...) embed is ambiguous and PostgREST rejects the whole query with
+    // 300 PGRST201. Name the constraint so it resolves to the creator.
+    const { data, error } = await supabase
       .from('council_records')
-      .select('*, creator:profiles(full_name, email)')
+      .select('*, creator:profiles!council_records_created_by_fkey(full_name, email)')
       .order('created_at', { ascending: false });
-    setRecords((data as CouncilRecord[]) || []);
+
+    if (error) {
+      // Without this the failure rendered as an empty list, which is how the
+      // ambiguous embed went unnoticed while records existed.
+      setLoadError(error.message);
+      setRecords([]);
+    } else {
+      setLoadError('');
+      setRecords((data as CouncilRecord[]) || []);
+    }
     setLoading(false);
   }
 
@@ -154,6 +167,12 @@ export default function CouncilRecordsPage() {
         {loading ? (
           <div className="flex items-center justify-center py-16">
             <Loader2 className="w-8 h-8 text-blue-400 animate-spin" />
+          </div>
+        ) : loadError ? (
+          <div className="flex flex-col items-center justify-center py-16 gap-3 px-6 text-center">
+            <AlertCircle className="w-12 h-12 text-red-400" />
+            <p className="text-white font-medium">Could not load records</p>
+            <p className="text-slate-400 text-sm max-w-md">{loadError}</p>
           </div>
         ) : filtered.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 gap-3">
