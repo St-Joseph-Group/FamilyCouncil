@@ -55,6 +55,7 @@ export default function RolesPermissionsPage() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [loadError, setLoadError] = useState('');
+  const [createError, setCreateError] = useState('');
   const [newRoleName, setNewRoleName] = useState('');
   const [newRoleDisplay, setNewRoleDisplay] = useState('');
   const [newRoleDesc, setNewRoleDesc] = useState('');
@@ -190,10 +191,23 @@ export default function RolesPermissionsPage() {
   async function handleCreateRole() {
     if (!newRoleName || !newRoleDisplay) return;
     setSaving(true);
+    setCreateError('');
     const slug = newRoleName.toLowerCase().replace(/\s+/g, '_');
-    const { data } = await supabase.from('roles').insert({
+
+    // The error here used to be discarded, so a rejected insert closed the modal
+    // and cleared the form as though it had worked. The role simply never
+    // appeared, with the entered name already thrown away. Keep the modal open
+    // and the input intact so the attempt is not lost.
+    const { data, error } = await supabase.from('roles').insert({
       name: slug, display_name: newRoleDisplay, description: newRoleDesc, is_full_pledge: newRoleFullPledge,
     }).select().maybeSingle();
+
+    if (error) {
+      setCreateError(`Could not create the role: ${error.message}`);
+      setSaving(false);
+      return;
+    }
+
     if (data) await logAuditEvent(user?.id || null, 'create_role', 'roles', data.id, 'role', { name: slug, is_full_pledge: newRoleFullPledge });
     setShowCreate(false);
     setNewRoleName('');
@@ -206,7 +220,19 @@ export default function RolesPermissionsPage() {
 
   async function handleDeleteRole() {
     if (!confirmDelete || confirmDelete.is_system) return;
-    await supabase.from('roles').delete().eq('id', confirmDelete.id);
+    setSaveError('');
+
+    // Unchecked, a blocked delete still wrote a delete_role audit entry and
+    // cleared the selection, so the audit log recorded a deletion that never
+    // happened. Audit entries have to follow the write, not accompany it.
+    const { error } = await supabase.from('roles').delete().eq('id', confirmDelete.id);
+
+    if (error) {
+      setSaveError(`Could not delete the role: ${error.message}`);
+      setConfirmDelete(null);
+      return;
+    }
+
     await logAuditEvent(user?.id || null, 'delete_role', 'roles', confirmDelete.id, 'role', { name: confirmDelete.name });
     setConfirmDelete(null);
     if (selectedRole?.id === confirmDelete.id) setSelectedRole(null);
@@ -497,9 +523,17 @@ export default function RolesPermissionsPage() {
           <div className="bg-slate-900 border border-white/10 rounded-2xl w-full max-w-md shadow-2xl">
             <div className="flex items-center justify-between p-6 border-b border-white/5">
               <h3 className="text-white font-semibold text-lg">Create New Role</h3>
-              <button onClick={() => setShowCreate(false)} className="text-slate-400 hover:text-white"><X className="w-5 h-5" /></button>
+              <button onClick={() => { setShowCreate(false); setCreateError(''); }} aria-label="Close" className="text-slate-400 hover:text-white"><X className="w-5 h-5" aria-hidden="true" /></button>
             </div>
             <div className="p-6 space-y-4">
+              {/* The panel that normally shows saveError sits behind this modal,
+                  so a failed create needs its own slot or nobody sees it. */}
+              {createError && (
+                <div role="alert" className="flex items-start gap-2 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3 text-red-400 text-sm">
+                  <X className="w-4 h-4 flex-shrink-0 mt-0.5" aria-hidden="true" />
+                  <span>{createError}</span>
+                </div>
+              )}
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-1.5">Role Name (slug)</label>
                 <input value={newRoleName} onChange={(e) => setNewRoleName(e.target.value)} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 text-sm" placeholder="e.g., finance_admin" />

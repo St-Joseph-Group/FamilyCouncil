@@ -52,11 +52,16 @@ export default function LoginPage({ onForgotPassword }: Props) {
 
           <form onSubmit={handleSubmit} className="space-y-5">
             <div>
-              <label className="block text-sm font-medium text-slate-300 mb-1.5">
+              {/* htmlFor/id pair: the label was visually present but not bound to
+                  the field, so a screen reader announced only "edit text, blank" */}
+              <label htmlFor="login-identifier" className="block text-sm font-medium text-slate-300 mb-1.5">
                 Username or Email
               </label>
               <input
+                id="login-identifier"
+                name="username"
                 type="text"
+                autoComplete="username"
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
                 className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 transition-all"
@@ -66,12 +71,18 @@ export default function LoginPage({ onForgotPassword }: Props) {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-slate-300 mb-1.5">
+              <label htmlFor="login-password" className="block text-sm font-medium text-slate-300 mb-1.5">
                 Password
               </label>
               <div className="relative">
                 <input
+                  id="login-password"
+                  name="password"
                   type={showPassword ? 'text' : 'password'}
+                  // Without this, password managers neither fill nor offer to
+                  // save. On a system where admins hand out passwords, that
+                  // pushes people towards weaker ones they can retype.
+                  autoComplete="current-password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 pr-12 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 transition-all"
@@ -81,16 +92,24 @@ export default function LoginPage({ onForgotPassword }: Props) {
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
+                  // Icon-only, so it had no accessible name at all and was
+                  // announced as just "button"
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
+                  aria-pressed={showPassword}
+                  aria-controls="login-password"
+                  title={showPassword ? 'Hide password' : 'Show password'}
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 transition-colors"
                 >
-                  {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                  {showPassword ? <EyeOff className="w-5 h-5" aria-hidden="true" /> : <Eye className="w-5 h-5" aria-hidden="true" />}
                 </button>
               </div>
             </div>
 
             {error && (
-              <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3 text-red-400 text-sm">
-                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              // role=alert so a failed sign-in is announced rather than only
+              // appearing in red for people who can see it
+              <div role="alert" className="flex items-center gap-2 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3 text-red-400 text-sm">
+                <AlertCircle className="w-4 h-4 flex-shrink-0" aria-hidden="true" />
                 {error}
               </div>
             )}
