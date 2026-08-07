@@ -11,5 +11,19 @@
     - Enables true real-time synchronization between all chat modules
 */
 
-ALTER PUBLICATION supabase_realtime ADD TABLE chat_messages;
-ALTER PUBLICATION supabase_realtime ADD TABLE chat_logs;
+-- Guarded: ALTER PUBLICATION ... ADD TABLE errors when the table is already
+-- published, so the bare form cannot be replayed. See the same block in
+-- 20260525031642.
+DO $$
+DECLARE
+  t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['chat_messages', 'chat_logs'] LOOP
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_publication_tables
+      WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = t
+    ) THEN
+      EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', t);
+    END IF;
+  END LOOP;
+END $$;

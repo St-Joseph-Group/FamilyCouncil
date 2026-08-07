@@ -7,6 +7,9 @@ interface Props {
 
 interface State {
   error: Error | null;
+  // Changing this remounts the subtree, so a retry rebuilds the children from
+  // scratch instead of re-rendering the same instances with the same state.
+  attempt: number;
 }
 
 /**
@@ -18,9 +21,9 @@ interface State {
  * user staring at an empty document with the detail only in the console.
  */
 export default class ErrorBoundary extends React.Component<Props, State> {
-  state: State = { error: null };
+  state: State = { error: null, attempt: 0 };
 
-  static getDerivedStateFromError(error: Error): State {
+  static getDerivedStateFromError(error: Error): Partial<State> {
     return { error };
   }
 
@@ -28,9 +31,19 @@ export default class ErrorBoundary extends React.Component<Props, State> {
     console.error('[ErrorBoundary]', error, info.componentStack);
   }
 
+  /**
+   * Clearing `error` alone re-rendered the identical subtree with identical
+   * state, so a deterministic crash threw again immediately and the button read
+   * as broken. Bumping `attempt` changes the child key, which unmounts and
+   * rebuilds everything below, giving the retry a genuinely fresh start.
+   */
+  retry = () => {
+    this.setState((prev) => ({ error: null, attempt: prev.attempt + 1 }));
+  };
+
   render() {
-    const { error } = this.state;
-    if (!error) return this.props.children;
+    const { error, attempt } = this.state;
+    if (!error) return <React.Fragment key={attempt}>{this.props.children}</React.Fragment>;
 
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
@@ -46,7 +59,7 @@ export default class ErrorBoundary extends React.Component<Props, State> {
 
           <div className="flex gap-2">
             <button
-              onClick={() => this.setState({ error: null })}
+              onClick={this.retry}
               className="flex-1 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 text-white rounded-xl text-sm font-medium transition-all"
             >
               Try again

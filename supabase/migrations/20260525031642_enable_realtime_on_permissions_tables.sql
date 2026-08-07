@@ -11,6 +11,19 @@
     - Applies consistently across all modules and permission groups
 */
 
-ALTER PUBLICATION supabase_realtime ADD TABLE role_permissions;
-ALTER PUBLICATION supabase_realtime ADD TABLE roles;
-ALTER PUBLICATION supabase_realtime ADD TABLE profiles;
+-- ALTER PUBLICATION ... ADD TABLE errors if the table is already published, which
+-- makes a re-run of this file fail rather than no-op. Guarded so the migration
+-- set can be replayed, including after a partially failed run.
+DO $$
+DECLARE
+  t text;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['role_permissions', 'roles', 'profiles'] LOOP
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_publication_tables
+      WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = t
+    ) THEN
+      EXECUTE format('ALTER PUBLICATION supabase_realtime ADD TABLE public.%I', t);
+    END IF;
+  END LOOP;
+END $$;
