@@ -1,4 +1,4 @@
-import { supabase } from './supabase';
+import { supabase, rawSupabase, reportDbError } from './supabase';
 
 const PROXY_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/webhook-proxy`;
 
@@ -39,7 +39,11 @@ export async function fetchActiveWebhook(): Promise<{
   webhook: ActiveWebhookSummary | null;
   error: string | null;
 }> {
-  const { data, error } = await supabase.rpc('get_active_webhook');
+  // rawSupabase, so a missing function does not reach the global error banner.
+  // This call is a feature probe: "not found" is an expected answer we recover
+  // from, not a fault worth interrupting the reader over. Genuine failures are
+  // still reported by hand below, so the banner keeps seeing everything real.
+  const { data, error } = await rawSupabase.rpc('get_active_webhook');
 
   if (!error) {
     const row = Array.isArray(data) ? data[0] : data;
@@ -49,6 +53,7 @@ export async function fetchActiveWebhook(): Promise<{
   // PGRST202: the function is not in the schema cache, i.e. not migrated yet.
   const notMigrated = error.code === 'PGRST202' || /schema cache/i.test(error.message);
   if (!notMigrated) {
+    reportDbError('rpc:get_active_webhook', error);
     return { webhook: null, error: error.message };
   }
 

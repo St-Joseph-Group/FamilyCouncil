@@ -30,7 +30,19 @@ export function onDbError(listener: DbErrorListener): () => void {
   return () => listeners.delete(listener);
 }
 
-function reportDbError(table: string, error: { message?: string; code?: string; details?: string | null; hint?: string | null }) {
+/**
+ * The client without the error-reporting wrapper.
+ *
+ * For deliberate probes only: a call whose failure is an expected answer rather
+ * than a fault, such as feature-detecting a function that a pending migration
+ * has not created yet. Anything using this owns the error, and should hand
+ * genuine failures to reportDbError itself so the banner still sees them.
+ *
+ * Everything else must use `supabase`.
+ */
+export const rawSupabase = rawClient;
+
+export function reportDbError(table: string, error: { message?: string; code?: string; details?: string | null; hint?: string | null }) {
   const event: DbErrorEvent = {
     table,
     code: error.code,
