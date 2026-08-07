@@ -49,6 +49,42 @@ Deno.serve(async (req: Request) => {
       auth: { autoRefreshToken: false, persistSession: false },
     });
 
+    // Authorise: being signed in is not enough. Without this, any authenticated
+    // user could call this endpoint directly and create an account with any
+    // role_id, super_admin included.
+    const { data: callerProfile } = await adminClient
+      .from("profiles")
+      .select("role_id, is_active, role:roles(name)")
+      .eq("id", caller.id)
+      .maybeSingle();
+
+    if (!callerProfile || !callerProfile.is_active) {
+      return new Response(
+        JSON.stringify({ success: false, message: "Your account is not active." }),
+        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    const callerRoleName = (callerProfile as { role?: { name?: string } }).role?.name;
+    const callerIsSuperAdmin = callerRoleName === "super_admin";
+
+    if (!callerIsSuperAdmin) {
+      const { data: perm } = await adminClient
+        .from("role_permissions")
+        .select("permission:permissions!inner(module, action)")
+        .eq("role_id", callerProfile.role_id)
+        .eq("permissions.module", "members")
+        .eq("permissions.action", "create")
+        .maybeSingle();
+
+      if (!perm) {
+        return new Response(
+          JSON.stringify({ success: false, message: "You do not have permission to create members." }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
+    }
+
     const body: CreateMemberRequest = await req.json();
     const { email, password, full_name, role_id, is_active } = body;
 
@@ -57,6 +93,22 @@ Deno.serve(async (req: Request) => {
         JSON.stringify({ success: false, message: "Email and password (min 8 chars) are required." }),
         { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
+    }
+
+    // Only a super admin may mint another super admin.
+    if (role_id && !callerIsSuperAdmin) {
+      const { data: targetRole } = await adminClient
+        .from("roles")
+        .select("name")
+        .eq("id", role_id)
+        .maybeSingle();
+
+      if (targetRole?.name === "super_admin") {
+        return new Response(
+          JSON.stringify({ success: false, message: "You do not have permission to assign the Super Admin role." }),
+          { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
+      }
     }
 
     const { data: existingProfile } = await adminClient
@@ -83,6 +135,23 @@ Deno.serve(async (req: Request) => {
         const { data: existingAuthUser } = await adminClient.auth.admin.listUsers();
         const found = existingAuthUser?.users?.find((u) => u.email === email);
         if (found) {
+          // This branch exists to repair an auth user that has no profile row.
+          // If a profile already exists it must not be overwritten: the upsert
+          // would reset that member's role and active flag, which is a way to
+          // demote an existing admin through the create endpoint.
+          const { data: orphanCheck } = await adminClient
+            .from("profiles")
+            .select("id")
+            .eq("id", found.id)
+            .maybeSingle();
+
+          if (orphanCheck) {
+            return new Response(
+              JSON.stringify({ success: false, message: "A member with this email already exists." }),
+              { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+            );
+          }
+
           await adminClient.from("profiles").upsert({
             id: found.id,
             email,
