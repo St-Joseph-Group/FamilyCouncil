@@ -33,6 +33,48 @@ ${bodyContent}
 </html>`;
 }
 
+/** Longest we wait on a member edge function before giving up. */
+const MEMBER_FN_TIMEOUT_MS = 60000;
+
+/**
+ * Call one of the member edge functions and always come back with a usable
+ * result object.
+ *
+ * A bare fetch + res.json() had two ways to throw: the request itself (network,
+ * CORS, no timeout at all) and a body that is not JSON, which is what a platform
+ * 5xx or a cold-start failure returns. Either threw straight out of handleSave,
+ * which had no catch, so Save sat on "Saving…" forever with nothing on screen.
+ */
+async function callMemberFunction(
+  url: string,
+  accessToken: string,
+  body: unknown,
+): Promise<{ success?: boolean; message?: string; [key: string]: unknown }> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(MEMBER_FN_TIMEOUT_MS),
+  });
+
+  const raw = await res.text();
+  try {
+    return JSON.parse(raw);
+  } catch {
+    // Surface the status and whatever the server did say, rather than throwing
+    // on a response that simply was not JSON.
+    return {
+      success: false,
+      message: raw.trim()
+        ? `Server returned ${res.status}: ${raw.slice(0, 200)}`
+        : `Server returned ${res.status} with an empty response.`,
+    };
+  }
+}
+
 /**
  * Ask the edge function to send a notification.
  *
@@ -157,158 +199,149 @@ export default function MembersPage() {
 
     setSaving(true);
 
-    if (editing) {
-      // Check if email is being changed to one already used by another active member
-      if (form.email !== editing.email) {
-        const { data: existingProfile } = await supabase
-          .from('profiles')
-          .select('id')
-          .eq('email', form.email)
-          .neq('id', editing.id)
-          .maybeSingle();
-        if (existingProfile) {
-          setFormError('A member with this email already exists.');
-          setSaving(false);
+    // Everything below is wrapped so the button can never be left spinning.
+    // Previously every setSaving(false) sat on an explicit success or
+    // validation path, so a throw anywhere -- a rejected fetch, a non-JSON
+    // body, a failed reload -- escaped handleSave and left "Saving…" on screen
+    // with no message and no way forward.
+    try {
+      if (editing) {
+        // Check if email is being changed to one already used by another active member
+        if (form.email !== editing.email) {
+          const { data: existingProfile } = await supabase
+            .from('profiles')
+            .select('id')
+            .eq('email', form.email)
+            .neq('id', editing.id)
+            .maybeSingle();
+          if (existingProfile) {
+            setFormError('A member with this email already exists.');
+            return;
+          }
+        }
+
+        if (form.password && form.password.length < 8) {
+          setFormError('Password must be at least 8 characters.');
           return;
         }
-      }
 
-      if (form.password && form.password.length < 8) {
-        setFormError('Password must be at least 8 characters.');
-        setSaving(false);
-        return;
-      }
+        // Email and password live in auth.users, which the browser client cannot
+        // touch. Updating profiles directly silently discarded password changes,
+        // so the whole edit goes through the edge function.
+        const { data: sessionData } = await supabase.auth.getSession();
+        const accessToken = sessionData?.session?.access_token;
 
-      // Email and password live in auth.users, which the browser client cannot
-      // touch. Updating profiles directly silently discarded password changes,
-      // so the whole edit goes through the edge function.
-      const { data: sessionData } = await supabase.auth.getSession();
-      const accessToken = sessionData?.session?.access_token;
+        if (!accessToken) {
+          setFormError('Session expired. Please reload and try again.');
+          return;
+        }
 
-      if (!accessToken) {
-        setFormError('Session expired. Please reload and try again.');
-        setSaving(false);
-        return;
-      }
-
-      const updateRes = await fetch(UPDATE_MEMBER_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({
+        const updateResult = await callMemberFunction(UPDATE_MEMBER_URL, accessToken, {
           user_id: editing.id,
           email: form.email,
           full_name: form.full_name,
           role_id: form.role_id || null,
           is_active: form.is_active,
           password: form.password || undefined,
-        }),
-      });
+        });
 
-      const updateResult = await updateRes.json();
+        if (!updateResult.success) {
+          setFormError(updateResult.message || 'Failed to update member.');
+          return;
+        }
 
-      if (!updateResult.success) {
-        setFormError(updateResult.message || 'Failed to update member.');
-        setSaving(false);
-        return;
-      }
+        await logAuditEvent(user?.id || null, 'update_member', 'members', editing.id, 'profile', {
+          full_name: form.full_name,
+          email: form.email,
+          password_changed: !!updateResult.password_changed,
+          email_changed: !!updateResult.email_changed,
+        });
 
-      await logAuditEvent(user?.id || null, 'update_member', 'members', editing.id, 'profile', {
-        full_name: form.full_name,
-        email: form.email,
-        password_changed: !!updateResult.password_changed,
-        email_changed: !!updateResult.email_changed,
-      });
+        // Send update notification email. The edge function decides whether SMTP
+        // is configured; this page can no longer read that table.
+        {
+          const systemUrl = window.location.origin;
+          const emailBody = generateEmailHtml(
+            'Account Updated',
+            `<p style="color:#e2e8f0;">Hello <strong>${form.full_name}</strong>,</p>
+  <p style="color:#cbd5e1;">Your account on the Family Council System has been updated.</p>
+  <p style="color:#cbd5e1;">If you have any questions about this change, please contact your system administrator.</p>
+  <div style="text-align:center;margin:24px 0;">
+  <a href="${systemUrl}" target="_blank" style="display:inline-block;background:linear-gradient(135deg,#3b82f6,#10b981);color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;padding:12px 32px;border-radius:8px;">Go to Family Council System</a>
+  </div>
+  <p style="color:#64748b;font-size:12px;">If you did not expect this change, please contact your system administrator.</p>`
+          );
+          sendNotificationEmail(accessToken, form.email, form.full_name, 'Your Account Has Been Updated - Family Council', emailBody, 'member_updated');
+        }
+      } else {
+        if (!form.password || form.password.length < 8) {
+          setFormError('Password must be at least 8 characters.');
+          return;
+        }
 
-      // Send update notification email. The edge function decides whether SMTP
-      // is configured; this page can no longer read that table.
-      {
-        const systemUrl = window.location.origin;
-        const emailBody = generateEmailHtml(
-          'Account Updated',
-          `<p style="color:#e2e8f0;">Hello <strong>${form.full_name}</strong>,</p>
-<p style="color:#cbd5e1;">Your account on the Family Council System has been updated.</p>
-<p style="color:#cbd5e1;">If you have any questions about this change, please contact your system administrator.</p>
-<div style="text-align:center;margin:24px 0;">
-<a href="${systemUrl}" target="_blank" style="display:inline-block;background:linear-gradient(135deg,#3b82f6,#10b981);color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;padding:12px 32px;border-radius:8px;">Go to Family Council System</a>
-</div>
-<p style="color:#64748b;font-size:12px;">If you did not expect this change, please contact your system administrator.</p>`
-        );
-        sendNotificationEmail(accessToken, form.email, form.full_name, 'Your Account Has Been Updated - Family Council', emailBody, 'member_updated');
-      }
-    } else {
-      if (!form.password || form.password.length < 8) {
-        setFormError('Password must be at least 8 characters.');
-        setSaving(false);
-        return;
-      }
+        // Use edge function to create user server-side (avoids switching admin session)
+        const { data: sessionData } = await supabase.auth.getSession();
+        const accessToken = sessionData?.session?.access_token;
 
-      // Use edge function to create user server-side (avoids switching admin session)
-      const { data: sessionData } = await supabase.auth.getSession();
-      const accessToken = sessionData?.session?.access_token;
+        if (!accessToken) {
+          setFormError('Session expired. Please reload and try again.');
+          return;
+        }
 
-      if (!accessToken) {
-        setFormError('Session expired. Please reload and try again.');
-        setSaving(false);
-        return;
-      }
-
-      const createRes = await fetch(CREATE_MEMBER_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${accessToken}`,
-        },
-        body: JSON.stringify({
+        const createResult = await callMemberFunction(CREATE_MEMBER_URL, accessToken, {
           email: form.email,
           password: form.password,
           full_name: form.full_name,
           role_id: form.role_id || null,
           is_active: form.is_active,
-        }),
-      });
+        });
 
-      const createResult = await createRes.json();
+        if (!createResult.success) {
+          setFormError(createResult.message || 'Failed to create member.');
+          return;
+        }
 
-      if (!createResult.success) {
-        setFormError(createResult.message || 'Failed to create member.');
-        setSaving(false);
-        return;
+        const newUserId = createResult.user_id;
+
+        await logAuditEvent(user?.id || null, 'create_member', 'members', newUserId, 'profile', { email: form.email, full_name: form.full_name });
+
+        // Send welcome email with credentials. The edge function decides whether
+        // SMTP is configured; this page can no longer read that table.
+        {
+          const systemUrl = window.location.origin;
+          const emailBody = generateEmailHtml(
+            'Welcome to Family Council',
+            `<p style="color:#e2e8f0;">Hello <strong>${form.full_name}</strong>,</p>
+  <p style="color:#cbd5e1;">An account has been created for you on the Family Council System. You can now sign in using the credentials below:</p>
+  <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;margin:16px 0;">
+  <p style="color:#94a3b8;margin:0 0 8px;font-size:13px;"><strong style="color:#e2e8f0;">Email:</strong> ${form.email}</p>
+  <p style="color:#94a3b8;margin:0;font-size:13px;"><strong style="color:#e2e8f0;">Temporary Password:</strong> ${form.password}</p>
+  </div>
+  <div style="background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.2);border-radius:8px;padding:12px;margin:16px 0;">
+  <p style="color:#fbbf24;margin:0;font-size:12px;font-weight:600;">Important: Please change your password after your first login.</p>
+  </div>
+  <div style="text-align:center;margin:24px 0;">
+  <a href="${systemUrl}" target="_blank" style="display:inline-block;background:linear-gradient(135deg,#3b82f6,#10b981);color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;padding:12px 32px;border-radius:8px;">Login to Family Council System</a>
+  </div>
+  <p style="color:#64748b;font-size:12px;">If you did not expect this email, please disregard it.</p>`
+          );
+          sendNotificationEmail(accessToken, form.email, form.full_name, 'Welcome to Family Council - Your Account Details', emailBody, 'member_created');
+        }
       }
 
-      const newUserId = createResult.user_id;
-
-      await logAuditEvent(user?.id || null, 'create_member', 'members', newUserId, 'profile', { email: form.email, full_name: form.full_name });
-
-      // Send welcome email with credentials. The edge function decides whether
-      // SMTP is configured; this page can no longer read that table.
-      {
-        const systemUrl = window.location.origin;
-        const emailBody = generateEmailHtml(
-          'Welcome to Family Council',
-          `<p style="color:#e2e8f0;">Hello <strong>${form.full_name}</strong>,</p>
-<p style="color:#cbd5e1;">An account has been created for you on the Family Council System. You can now sign in using the credentials below:</p>
-<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:16px;margin:16px 0;">
-<p style="color:#94a3b8;margin:0 0 8px;font-size:13px;"><strong style="color:#e2e8f0;">Email:</strong> ${form.email}</p>
-<p style="color:#94a3b8;margin:0;font-size:13px;"><strong style="color:#e2e8f0;">Temporary Password:</strong> ${form.password}</p>
-</div>
-<div style="background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.2);border-radius:8px;padding:12px;margin:16px 0;">
-<p style="color:#fbbf24;margin:0;font-size:12px;font-weight:600;">Important: Please change your password after your first login.</p>
-</div>
-<div style="text-align:center;margin:24px 0;">
-<a href="${systemUrl}" target="_blank" style="display:inline-block;background:linear-gradient(135deg,#3b82f6,#10b981);color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;padding:12px 32px;border-radius:8px;">Login to Family Council System</a>
-</div>
-<p style="color:#64748b;font-size:12px;">If you did not expect this email, please disregard it.</p>`
-        );
-        sendNotificationEmail(accessToken, form.email, form.full_name, 'Welcome to Family Council - Your Account Details', emailBody, 'member_created');
-      }
+      await fetchMembers();
+      setShowModal(false);
+    } catch (err) {
+      const isTimeout = err instanceof DOMException && err.name === 'TimeoutError';
+      setFormError(
+        isTimeout
+          ? 'The server did not respond in time. The member may or may not have been created — reload the list before trying again.'
+          : `Could not save: ${err instanceof Error ? err.message : 'unexpected error'}`
+      );
+      console.error('[members] save failed', err);
+    } finally {
+      setSaving(false);
     }
-
-    await fetchMembers();
-    setShowModal(false);
-    setSaving(false);
   }
 
   async function handleToggleActive() {
