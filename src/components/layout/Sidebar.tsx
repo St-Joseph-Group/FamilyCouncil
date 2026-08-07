@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import {
   LayoutDashboard, FileText, Calendar, Megaphone, Users, MessageCircle,
   ClipboardList, Shield, Bell, ChevronLeft, ChevronRight, LogOut, User,
-  Lock, Settings2, ChevronDown, ChevronUp, Webhook, Mail
+  Lock, Settings2, ChevronDown, ChevronUp, Webhook, Mail, Loader2
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -77,6 +77,7 @@ interface Props {
 export default function Sidebar({ currentPath, onNavigate, notificationCount, collapsed, setCollapsed }: Props) {
   const { profile, role, signOut, isSuperAdmin, hasPermission } = useAuth();
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
   const [openGroups, setOpenGroups] = useState<Set<string>>(new Set(['configuration']));
 
   function canNavigate(module: string): boolean {
@@ -278,9 +279,22 @@ export default function Sidebar({ currentPath, onNavigate, notificationCount, co
                 Change Password
               </button>
               <div className="border-t border-white/5" />
-              <button onClick={() => { signOut(); setShowUserMenu(false); }} className="w-full flex items-center gap-2 px-4 py-2.5 text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-colors text-sm">
-                <LogOut className="w-4 h-4" />
-                Sign Out
+              <button
+                onClick={async () => {
+                  if (signingOut) return;
+                  setSigningOut(true);
+                  try {
+                    await signOut();
+                    setShowUserMenu(false);
+                  } finally {
+                    setSigningOut(false);
+                  }
+                }}
+                disabled={signingOut}
+                className="w-full flex items-center gap-2 px-4 py-2.5 text-red-400 hover:text-red-300 hover:bg-red-500/10 disabled:opacity-60 transition-colors text-sm"
+              >
+                {signingOut ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogOut className="w-4 h-4" />}
+                {signingOut ? 'Signing out...' : 'Sign Out'}
               </button>
             </div>
           )}

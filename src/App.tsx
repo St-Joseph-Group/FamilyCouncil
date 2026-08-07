@@ -96,16 +96,30 @@ function AppInner() {
   }, [user]);
 
   async function ensureProfile(authUser: { id: string; email?: string }) {
-    const { data } = await supabase.from('profiles').select('id').eq('id', authUser.id).maybeSingle();
-    if (!data) {
-      const defaultRole = await supabase.from('roles').select('id').eq('name', 'guest_viewer').maybeSingle();
-      await supabase.from('profiles').insert({
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('id')
+      .eq('id', authUser.id)
+      .maybeSingle();
+
+    // A failed lookup also yields data === null. Treating that as "no profile"
+    // provisioned a duplicate (23505 on profiles_pkey), and had the insert gone
+    // through it would have reset an existing member to guest_viewer.
+    if (error || data) return;
+
+    const defaultRole = await supabase.from('roles').select('id').eq('name', 'guest_viewer').maybeSingle();
+
+    // upsert + ignoreDuplicates so two concurrent runs (token refresh re-fires
+    // this effect) cannot collide. Never overwrites an existing profile.
+    await supabase.from('profiles').upsert(
+      {
         id: authUser.id,
         email: authUser.email || '',
         full_name: authUser.email?.split('@')[0] || '',
         role_id: defaultRole.data?.id || null,
-      });
-    }
+      },
+      { onConflict: 'id', ignoreDuplicates: true }
+    );
   }
 
   if (loading) {
