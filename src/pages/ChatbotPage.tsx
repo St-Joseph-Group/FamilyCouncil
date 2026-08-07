@@ -55,6 +55,8 @@ export default function ChatbotPage() {
   const [attachment, setAttachment] = useState<File | null>(null);
   const [activeWebhook, setActiveWebhook] = useState<ActiveWebhook | null>(null);
   const [webhookError, setWebhookError] = useState<string | null>(null);
+  // Shown as a typing bubble while the assistant is composing a reply.
+  const [botTyping, setBotTyping] = useState(false);
   const [accessRequest, setAccessRequest] = useState<{ module: string; action: string } | null>(null);
 
   const canCreate = isSuperAdmin() || hasPermission('chatbot', 'create');
@@ -73,7 +75,9 @@ export default function ChatbotPage() {
 
   useEffect(() => { loadActiveWebhook(); fetchChatLogs(); }, []);
   useEffect(() => { if (selectedLog) fetchMessages(selectedLog.id); }, [selectedLog]);
-  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  // botTyping included so the indicator scrolls into view when it appears,
+  // rather than sitting below the fold where nobody sees it.
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, botTyping]);
 
   // Real-time subscription for messages in the selected conversation
   useEffect(() => {
@@ -341,6 +345,7 @@ export default function ChatbotPage() {
     };
 
     // Fire webhook asynchronously - do not block input
+    setBotTyping(true);
     (async () => {
       const start = Date.now();
       try {
@@ -407,6 +412,11 @@ export default function ChatbotPage() {
           message_type: 'text',
           content: 'Message sent but response is still processing. It will appear when ready.',
         });
+      } finally {
+        // finally, not the success path: a failed, timed-out, or rejected
+        // webhook must not leave the indicator running forever. The catch block
+        // above awaits its own writes, which can themselves throw.
+        setBotTyping(false);
       }
 
       await logAuditEvent(user?.id || null, 'send_message', 'chatbot', logId, 'chat_log', { content: content.slice(0, 100) });
@@ -654,6 +664,29 @@ export default function ChatbotPage() {
                   );
                 })
               )}
+
+              {botTyping && (
+                <div className="flex gap-3 justify-start">
+                  <div className="w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center flex-shrink-0">
+                    <Bot className="w-4 h-4 text-emerald-400" aria-hidden="true" />
+                  </div>
+                  <div
+                    className="bg-white/5 border border-white/10 rounded-2xl rounded-tl-sm px-4 py-3"
+                    role="status"
+                    aria-live="polite"
+                  >
+                    {/* Visible dots for sighted users, one readable sentence for
+                        screen readers, which must not hear three bouncing dots. */}
+                    <span className="sr-only">The assistant is typing a reply.</span>
+                    <span className="flex items-center gap-1" aria-hidden="true">
+                      <span className="w-2 h-2 rounded-full bg-slate-400 motion-safe:animate-bounce [animation-delay:-0.3s]" />
+                      <span className="w-2 h-2 rounded-full bg-slate-400 motion-safe:animate-bounce [animation-delay:-0.15s]" />
+                      <span className="w-2 h-2 rounded-full bg-slate-400 motion-safe:animate-bounce" />
+                    </span>
+                  </div>
+                </div>
+              )}
+
               <div ref={messagesEndRef} />
             </div>
 
