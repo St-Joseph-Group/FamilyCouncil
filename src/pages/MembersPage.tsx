@@ -33,36 +33,22 @@ ${bodyContent}
 </html>`;
 }
 
-interface SmtpConfig {
-  id: string;
-  host: string;
-  port: number;
-  username: string;
-  password: string;
-  sender_email: string;
-  sender_name: string;
-  encryption: string;
-  is_active: boolean;
-}
-
-async function getActiveSmtp(): Promise<SmtpConfig | null> {
-  const { data } = await supabase
-    .from('smtp_settings')
-    .select('*')
-    .eq('is_active', true)
-    .order('created_at')
-    .limit(1)
-    .maybeSingle();
-  return data as SmtpConfig | null;
-}
-
+/**
+ * Ask the edge function to send a notification.
+ *
+ * Deliberately carries no SMTP credentials: the function loads the active
+ * config itself with service_role and writes the email_logs row. This page used
+ * to read smtp_settings (password included) into the browser and post it along
+ * with the request, which is why every signed-in user could read that table.
+ *
+ * Best effort. A member is still created or updated when the notice fails.
+ */
 async function sendNotificationEmail(
-  smtp: SmtpConfig,
+  accessToken: string,
   toEmail: string,
   toName: string,
   subject: string,
   bodyHtml: string,
-  triggeredBy: string | null,
   triggerAction: string,
 ): Promise<boolean> {
   try {
@@ -70,56 +56,28 @@ async function sendNotificationEmail(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+        'Authorization': `Bearer ${accessToken}`,
       },
       body: JSON.stringify({
         action: 'send',
-        smtp: {
-          host: smtp.host,
-          port: smtp.port,
-          username: smtp.username,
-          password: smtp.password,
-          sender_email: smtp.sender_email,
-          sender_name: smtp.sender_name,
-          encryption: smtp.encryption,
-        },
         to_email: toEmail,
         to_name: toName,
         subject,
         body_html: bodyHtml,
+        trigger_action: triggerAction,
+        trigger_module: 'members',
       }),
       signal: AbortSignal.timeout(30000),
     });
 
     const result = await res.json();
-
-    await supabase.from('email_logs').insert({
-      recipient_email: toEmail,
-      recipient_name: toName,
-      subject,
-      body_html: bodyHtml,
-      status: result.success ? 'sent' : 'failed',
-      error_message: result.success ? '' : result.message,
-      smtp_config_id: smtp.id,
-      triggered_by: triggeredBy,
-      trigger_action: triggerAction,
-      trigger_module: 'members',
-    });
-
-    return result.success;
-  } catch {
-    await supabase.from('email_logs').insert({
-      recipient_email: toEmail,
-      recipient_name: toName,
-      subject,
-      body_html: bodyHtml,
-      status: 'failed',
-      error_message: 'Network error sending email',
-      smtp_config_id: smtp.id,
-      triggered_by: triggeredBy,
-      trigger_action: triggerAction,
-      trigger_module: 'members',
-    });
+    if (!result.success) {
+      console.warn('[members] notification email not sent:', result.message);
+    }
+    return !!result.success;
+  } catch (err) {
+    // Never reached the function, so there is nothing server-side to log it.
+    console.warn('[members] notification email request failed', err);
     return false;
   }
 }
@@ -264,9 +222,9 @@ export default function MembersPage() {
         email_changed: !!updateResult.email_changed,
       });
 
-      // Send update notification email
-      const smtp = await getActiveSmtp();
-      if (smtp) {
+      // Send update notification email. The edge function decides whether SMTP
+      // is configured; this page can no longer read that table.
+      {
         const systemUrl = window.location.origin;
         const emailBody = generateEmailHtml(
           'Account Updated',
@@ -278,7 +236,7 @@ export default function MembersPage() {
 </div>
 <p style="color:#64748b;font-size:12px;">If you did not expect this change, please contact your system administrator.</p>`
         );
-        sendNotificationEmail(smtp, form.email, form.full_name, 'Your Account Has Been Updated - Family Council', emailBody, user?.id || null, 'member_updated');
+        sendNotificationEmail(accessToken, form.email, form.full_name, 'Your Account Has Been Updated - Family Council', emailBody, 'member_updated');
       }
     } else {
       if (!form.password || form.password.length < 8) {
@@ -324,9 +282,9 @@ export default function MembersPage() {
 
       await logAuditEvent(user?.id || null, 'create_member', 'members', newUserId, 'profile', { email: form.email, full_name: form.full_name });
 
-      // Send welcome email with credentials
-      const smtp = await getActiveSmtp();
-      if (smtp) {
+      // Send welcome email with credentials. The edge function decides whether
+      // SMTP is configured; this page can no longer read that table.
+      {
         const systemUrl = window.location.origin;
         const emailBody = generateEmailHtml(
           'Welcome to Family Council',
@@ -344,7 +302,7 @@ export default function MembersPage() {
 </div>
 <p style="color:#64748b;font-size:12px;">If you did not expect this email, please disregard it.</p>`
         );
-        sendNotificationEmail(smtp, form.email, form.full_name, 'Welcome to Family Council - Your Account Details', emailBody, user?.id || null, 'member_created');
+        sendNotificationEmail(accessToken, form.email, form.full_name, 'Welcome to Family Council - Your Account Details', emailBody, 'member_created');
       }
     }
 
