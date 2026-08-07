@@ -67,11 +67,15 @@ interface Props {
   currentPath: string;
   onNavigate: (path: string) => void;
   notificationCount: number;
+  // Controlled by AppLayout so the rail width and the main content margin
+  // cannot disagree. They were separate state before, which is why the layout
+  // overflowed horizontally on small viewports.
+  collapsed: boolean;
+  setCollapsed: (v: boolean) => void;
 }
 
-export default function Sidebar({ currentPath, onNavigate, notificationCount }: Props) {
+export default function Sidebar({ currentPath, onNavigate, notificationCount, collapsed, setCollapsed }: Props) {
   const { profile, role, signOut, isSuperAdmin, hasPermission } = useAuth();
-  const [collapsed, setCollapsed] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [openGroups, setOpenGroups] = useState<Set<string>>(new Set(['configuration']));
 
