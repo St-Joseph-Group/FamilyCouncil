@@ -118,7 +118,8 @@ export default function UserManualPage() {
           <button
             onClick={() => setQuery('')}
             aria-label="Clear search"
-            className="absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-white rounded-lg hover:bg-white/5 transition-colors"
+            // 32px visual, extended to 44px for touch
+            className="absolute right-3 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-white rounded-lg hover:bg-white/5 transition-colors before:absolute before:-inset-1.5 before:content-['']"
           >
             <X className="w-4 h-4" aria-hidden="true" />
           </button>

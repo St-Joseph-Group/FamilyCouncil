@@ -82,9 +82,12 @@ export default function ChangePasswordPage() {
               <button
                 type="button"
                 onClick={() => setShowNew(!showNew)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+                aria-label={showNew ? 'Hide new password' : 'Show new password'}
+                aria-pressed={showNew}
+                title={showNew ? 'Hide new password' : 'Show new password'}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 before:absolute before:-inset-3 before:content-['']"
               >
-                {showNew ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                {showNew ? <EyeOff className="w-5 h-5" aria-hidden="true" /> : <Eye className="w-5 h-5" aria-hidden="true" />}
               </button>
             </div>
             {newPassword && (
@@ -116,9 +119,12 @@ export default function ChangePasswordPage() {
               <button
                 type="button"
                 onClick={() => setShowConfirm(!showConfirm)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+                aria-label={showConfirm ? 'Hide confirmed password' : 'Show confirmed password'}
+                aria-pressed={showConfirm}
+                title={showConfirm ? 'Hide confirmed password' : 'Show confirmed password'}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 before:absolute before:-inset-3 before:content-['']"
               >
-                {showConfirm ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                {showConfirm ? <EyeOff className="w-5 h-5" aria-hidden="true" /> : <Eye className="w-5 h-5" aria-hidden="true" />}
               </button>
             </div>
           </div>
