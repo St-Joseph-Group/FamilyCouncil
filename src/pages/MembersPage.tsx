@@ -8,6 +8,7 @@ import AccessRequestModal from '../components/AccessRequestModal';
 
 const SMTP_SERVICE_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/smtp-service`;
 const CREATE_MEMBER_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-member`;
+const UPDATE_MEMBER_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/update-member`;
 
 function generateEmailHtml(title: string, bodyContent: string): string {
   return `<!DOCTYPE html>
@@ -214,14 +215,54 @@ export default function MembersPage() {
         }
       }
 
-      await supabase.from('profiles').update({
+      if (form.password && form.password.length < 8) {
+        setFormError('Password must be at least 8 characters.');
+        setSaving(false);
+        return;
+      }
+
+      // Email and password live in auth.users, which the browser client cannot
+      // touch. Updating profiles directly silently discarded password changes,
+      // so the whole edit goes through the edge function.
+      const { data: sessionData } = await supabase.auth.getSession();
+      const accessToken = sessionData?.session?.access_token;
+
+      if (!accessToken) {
+        setFormError('Session expired. Please reload and try again.');
+        setSaving(false);
+        return;
+      }
+
+      const updateRes = await fetch(UPDATE_MEMBER_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          user_id: editing.id,
+          email: form.email,
+          full_name: form.full_name,
+          role_id: form.role_id || null,
+          is_active: form.is_active,
+          password: form.password || undefined,
+        }),
+      });
+
+      const updateResult = await updateRes.json();
+
+      if (!updateResult.success) {
+        setFormError(updateResult.message || 'Failed to update member.');
+        setSaving(false);
+        return;
+      }
+
+      await logAuditEvent(user?.id || null, 'update_member', 'members', editing.id, 'profile', {
         full_name: form.full_name,
         email: form.email,
-        role_id: form.role_id || null,
-        is_active: form.is_active,
-        updated_at: new Date().toISOString(),
-      }).eq('id', editing.id);
-      await logAuditEvent(user?.id || null, 'update_member', 'members', editing.id, 'profile', { full_name: form.full_name, email: form.email });
+        password_changed: !!updateResult.password_changed,
+        email_changed: !!updateResult.email_changed,
+      });
 
       // Send update notification email
       const smtp = await getActiveSmtp();
