@@ -24,6 +24,9 @@ interface AuthContextType {
   isSuperAdmin: () => boolean;
 }
 
+/** Longest sign-out will wait on the audit write before giving up on it. */
+const AUDIT_TIMEOUT_MS = 2500;
+
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -219,8 +222,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   async function signOut() {
-    await logAuditEvent(user?.id || null, 'logout', 'auth', user?.id || '', 'user', {});
-    await supabase.auth.signOut();
+    // The audit entry has to be written while the session is still valid, since
+    // the audit_logs insert policy requires user_id = auth.uid(). But it must
+    // never gate sign-out: awaiting it unbounded meant a stalled insert left the
+    // user signed in with no feedback at all when they clicked Sign Out.
+    await Promise.race([
+      logAuditEvent(user?.id || null, 'logout', 'auth', user?.id || '', 'user', {}),
+      new Promise((resolve) => setTimeout(resolve, AUDIT_TIMEOUT_MS)),
+    ]);
+
+    const { error } = await supabase.auth.signOut();
+
+    if (error) {
+      // The default scope revokes server-side, which needs the network. If that
+      // fails, drop the local session anyway rather than stranding the user.
+      console.error('[auth] sign out failed, clearing local session', error);
+      await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+    }
   }
 
   async function resetPassword(email: string) {
