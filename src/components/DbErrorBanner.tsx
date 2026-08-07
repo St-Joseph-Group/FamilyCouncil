@@ -5,6 +5,28 @@ import { onDbError, DbErrorEvent } from '../lib/supabase';
 /** How long a transient connection blip stays on screen before clearing itself. */
 const NETWORK_AUTO_DISMISS_MS = 6000;
 
+/** Wait before re-checking the server, so an in-flight blip has time to pass. */
+const NETWORK_CONFIRM_DELAY_MS = 1200;
+
+/**
+ * Is the server actually unreachable, or did this one request just get dropped?
+ *
+ * Requests cancelled mid-flight — signing out, navigating away, a momentary DNS
+ * hiccup — reject with the same "Failed to fetch" as a genuine outage. Probing
+ * once before complaining keeps the banner quiet for the common harmless case.
+ */
+async function serverUnreachable(): Promise<boolean> {
+  try {
+    const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/auth/v1/health`, {
+      headers: { apikey: import.meta.env.VITE_SUPABASE_ANON_KEY as string },
+      cache: 'no-store',
+    });
+    return !res.ok;
+  } catch {
+    return true;
+  }
+}
+
 /**
  * A failed request is either the network dropping or the database refusing.
  * Only the second one is worth alarming about: "Failed to fetch" means the
@@ -30,18 +52,36 @@ export default function DbErrorBanner() {
   const timerRef = useRef<number | undefined>(undefined);
 
   useEffect(() => {
-    return onDbError((e) => {
-      setError(e);
-      window.clearTimeout(timerRef.current);
-      // Connection blips clear themselves; real database errors stay until the
-      // user dismisses them, so they can be read and reported.
-      if (isNetworkError(e)) {
-        timerRef.current = window.setTimeout(() => setError(null), NETWORK_AUTO_DISMISS_MS);
-      }
-    });
-  }, []);
+    let disposed = false;
 
-  useEffect(() => () => window.clearTimeout(timerRef.current), []);
+    const unsubscribe = onDbError((e) => {
+      window.clearTimeout(timerRef.current);
+
+      // A database error means the server answered and refused: show it at once.
+      if (!isNetworkError(e)) {
+        setError(e);
+        return;
+      }
+
+      // A network error might just be a cancelled request. Don't alarm the user
+      // until the server is confirmed unreachable.
+      if (document.visibilityState === 'hidden') return;
+
+      window.setTimeout(async () => {
+        if (disposed) return;
+        if (!(await serverUnreachable())) return; // it recovered, stay quiet
+        if (disposed) return;
+        setError(e);
+        timerRef.current = window.setTimeout(() => setError(null), NETWORK_AUTO_DISMISS_MS);
+      }, NETWORK_CONFIRM_DELAY_MS);
+    });
+
+    return () => {
+      disposed = true;
+      unsubscribe();
+      window.clearTimeout(timerRef.current);
+    };
+  }, []);
 
   if (!error) return null;
 
