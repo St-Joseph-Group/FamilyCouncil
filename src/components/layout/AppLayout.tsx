@@ -3,6 +3,7 @@ import Sidebar from './Sidebar';
 import TopBar from './TopBar';
 import UpdateNotificationModal from '../UpdateNotificationModal';
 import IdleTimeoutModal from '../IdleTimeoutModal';
+import DbErrorBanner from '../DbErrorBanner';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -58,6 +59,7 @@ export default function AppLayout({ children, currentPath, onNavigate }: Props) 
     <div className="min-h-screen bg-slate-950">
       <UpdateNotificationModal />
       <IdleTimeoutModal />
+      <DbErrorBanner />
       <Sidebar
         currentPath={currentPath}
         onNavigate={onNavigate}

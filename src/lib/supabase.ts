@@ -3,7 +3,106 @@ import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+const rawClient = createClient(supabaseUrl, supabaseAnonKey);
+
+export interface DbErrorEvent {
+  table: string;
+  code?: string;
+  message: string;
+  details?: string | null;
+  hint?: string | null;
+}
+
+type DbErrorListener = (event: DbErrorEvent) => void;
+
+const listeners = new Set<DbErrorListener>();
+
+/**
+ * Subscribe to every failed PostgREST call, wherever it was made.
+ *
+ * Most call sites destructure only `data` and drop `error`, so a failure renders
+ * as an empty list rather than an error. That is how the Council Records embed
+ * ambiguity (300 PGRST201) stayed invisible while three records existed. This
+ * gives one place to observe those failures without touching all of them.
+ */
+export function onDbError(listener: DbErrorListener): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+function reportDbError(table: string, error: { message?: string; code?: string; details?: string | null; hint?: string | null }) {
+  const event: DbErrorEvent = {
+    table,
+    code: error.code,
+    message: error.message || 'Unknown database error',
+    details: error.details,
+    hint: error.hint,
+  };
+
+  console.error(`[supabase] ${table}: ${event.code ? event.code + ' ' : ''}${event.message}`, error);
+  listeners.forEach((fn) => {
+    try {
+      fn(event);
+    } catch {
+      // a broken listener must never take down the caller
+    }
+  });
+}
+
+/**
+ * Wrap a PostgREST builder so awaiting it reports any error before handing the
+ * result back unchanged. Builders are thenable and chainable, so intercept
+ * `then` and re-wrap every chained method that returns another builder.
+ */
+function wrapBuilder<T extends object>(builder: T, table: string): T {
+  return new Proxy(builder, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+
+      if (prop === 'then' && typeof value === 'function') {
+        const thenFn = value as (onOk?: (v: unknown) => unknown, onErr?: (e: unknown) => unknown) => unknown;
+        return (onFulfilled?: (v: unknown) => unknown, onRejected?: (e: unknown) => unknown) =>
+          thenFn.call(
+            target,
+            (result: unknown) => {
+              const r = result as { error?: { message?: string; code?: string; details?: string | null; hint?: string | null } | null };
+              if (r && r.error) reportDbError(table, r.error);
+              return onFulfilled ? onFulfilled(result) : result;
+            },
+            onRejected
+          );
+      }
+
+      if (typeof value === 'function') {
+        const fn = value as (...args: unknown[]) => unknown;
+        return (...args: unknown[]) => {
+          const out = fn.apply(target, args);
+          // filter/modifier methods return the builder for chaining
+          return out && typeof out === 'object' ? wrapBuilder(out as object, table) : out;
+        };
+      }
+
+      return value;
+    },
+  }) as T;
+}
+
+export const supabase = new Proxy(rawClient, {
+  get(target, prop, receiver) {
+    if (prop === 'from') {
+      return (table: string) => wrapBuilder(target.from(table) as object, table);
+    }
+    if (prop === 'rpc') {
+      const rpcFn = target.rpc as unknown as (...args: unknown[]) => object;
+      return (fn: string, ...args: unknown[]) =>
+        wrapBuilder(rpcFn.apply(target, [fn, ...args]), `rpc:${fn}`);
+    }
+    const value = Reflect.get(target, prop, receiver);
+    // Bind methods to the real client so `this` is never the proxy. Supabase
+    // internals (auth, realtime) must not observe a wrapped receiver.
+    return typeof value === 'function' ? value.bind(target) : value;
+  },
+});
 
 export type Database = {
   public: {
