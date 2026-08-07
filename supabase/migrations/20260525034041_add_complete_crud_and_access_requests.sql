@@ -141,4 +141,15 @@ WHERE r.name = 'super_admin'
   );
 
 -- Enable realtime on access_requests for live updates
-ALTER PUBLICATION supabase_realtime ADD TABLE access_requests;
+-- Guarded: ALTER PUBLICATION ... ADD TABLE errors when the table is already
+-- published, so the bare form cannot be replayed. See the same block in
+-- 20260525031642.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables
+    WHERE pubname = 'supabase_realtime' AND schemaname = 'public' AND tablename = 'access_requests'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.access_requests;
+  END IF;
+END $$;

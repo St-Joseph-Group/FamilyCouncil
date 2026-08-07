@@ -810,13 +810,23 @@ $$;
 -- =============================================
 -- 27. SEED: SUPER ADMIN USER
 -- =============================================
+-- The password is supplied at run time rather than stored here. Before running
+-- this file:
+--     SET app.helpdesk_admin_password = 'a-password-you-choose';
+-- This file previously carried the cleartext, which is why the seeded account
+-- has to be rotated regardless of this change.
 DO $$
 DECLARE
   v_user_id uuid := gen_random_uuid();
   v_super_admin_role_id uuid;
+  v_password text := current_setting('app.helpdesk_admin_password', true);
 BEGIN
   -- Only create if the user doesn't already exist
   IF NOT EXISTS (SELECT 1 FROM auth.users WHERE email = 'helpdesk@stjoseph-group.com') THEN
+    IF v_password IS NULL OR length(v_password) < 12 THEN
+      RAISE EXCEPTION 'Set app.helpdesk_admin_password to at least 12 characters before running this file';
+    END IF;
+
     SELECT id INTO v_super_admin_role_id FROM roles WHERE name = 'super_admin';
 
     INSERT INTO auth.users (
@@ -828,7 +838,7 @@ BEGIN
       v_user_id,
       '00000000-0000-0000-0000-000000000000',
       'helpdesk@stjoseph-group.com',
-      crypt('Sjgi@DtO2026', gen_salt('bf')),
+      crypt(v_password, gen_salt('bf')),
       now(),
       '{"provider":"email","providers":["email"]}',
       '{"full_name":"Helpdesk Admin"}',
