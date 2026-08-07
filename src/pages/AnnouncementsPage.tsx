@@ -23,6 +23,7 @@ export default function AnnouncementsPage() {
   const [form, setForm] = useState({ title: '', content: '', priority: 'normal', is_published: false });
   const [confirmDelete, setConfirmDelete] = useState<Announcement | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [saveError, setSaveError] = useState('');
   const [accessRequest, setAccessRequest] = useState<{ module: string; action: string } | null>(null);
 
   const canCreate = hasPermission('announcements', 'create');
@@ -55,13 +56,36 @@ export default function AnnouncementsPage() {
 
   async function handleSave() {
     setSaving(true);
+    setSaveError('');
+
+    // Both branches used to discard the error: the update wrote an audit entry
+    // for a change that may never have landed, and the insert silently skipped
+    // its audit entry. Either way the modal closed as though it had worked.
     if (editing) {
-      await supabase.from('announcements').update({ ...form, updated_at: new Date().toISOString() }).eq('id', editing.id);
+      const { error } = await supabase
+        .from('announcements')
+        .update({ ...form, updated_at: new Date().toISOString() })
+        .eq('id', editing.id);
+      if (error) {
+        setSaveError(`Could not save the announcement: ${error.message}`);
+        setSaving(false);
+        return;
+      }
       await logAuditEvent(user?.id || null, 'update', 'announcements', editing.id, 'announcement', { title: form.title });
     } else {
-      const { data } = await supabase.from('announcements').insert({ ...form, created_by: user?.id }).select().maybeSingle();
+      const { data, error } = await supabase
+        .from('announcements')
+        .insert({ ...form, created_by: user?.id })
+        .select()
+        .maybeSingle();
+      if (error) {
+        setSaveError(`Could not create the announcement: ${error.message}`);
+        setSaving(false);
+        return;
+      }
       if (data) await logAuditEvent(user?.id || null, 'create', 'announcements', data.id, 'announcement', { title: form.title });
     }
+
     await fetchAnnouncements();
     setShowModal(false);
     setSaving(false);
@@ -156,9 +180,15 @@ export default function AnnouncementsPage() {
           <div className="bg-slate-900 border border-white/10 rounded-2xl w-full max-w-lg shadow-2xl">
             <div className="flex items-center justify-between p-6 border-b border-white/5">
               <h3 className="text-white font-semibold text-lg">{editing ? 'Edit Announcement' : 'New Announcement'}</h3>
-              <button onClick={() => setShowModal(false)} className="text-slate-400 hover:text-white"><X className="w-5 h-5" /></button>
+              <button onClick={() => { setShowModal(false); setSaveError(''); }} aria-label="Close" className="text-slate-400 hover:text-white"><X className="w-5 h-5" aria-hidden="true" /></button>
             </div>
             <div className="p-6 space-y-4">
+              {saveError && (
+                <div role="alert" className="flex items-start gap-2 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3 text-red-400 text-sm">
+                  <X className="w-4 h-4 flex-shrink-0 mt-0.5" aria-hidden="true" />
+                  <span>{saveError}</span>
+                </div>
+              )}
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-1.5">Title</label>
                 <input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 text-sm" placeholder="Announcement title..." />

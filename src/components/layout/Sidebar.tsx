@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import {
   LayoutDashboard, FileText, Calendar, Megaphone, Users, MessageCircle,
   ClipboardList, Shield, Bell, ChevronLeft, ChevronRight, LogOut, User,
-  Lock, Settings2, ChevronDown, ChevronUp, Webhook, Mail, Loader2
+  Lock, Settings2, ChevronDown, ChevronUp, Webhook, Mail, Loader2, BookOpen
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -14,6 +14,8 @@ interface NavLeaf {
   path: string;
   icon: React.ReactNode;
   badge?: number;
+  /** Shown to everyone regardless of role. Help must never be gated. */
+  alwaysVisible?: boolean;
 }
 
 interface NavGroup {
@@ -39,6 +41,7 @@ const ICONS: Record<string, React.ReactNode> = {
   configuration: <Settings2 className="w-5 h-5" />,
   webhook: <Webhook className="w-5 h-5" />,
   smtp: <Mail className="w-5 h-5" />,
+  manual: <BookOpen className="w-5 h-5" />,
 };
 
 const ALL_NAV: NavEntry[] = [
@@ -61,6 +64,10 @@ const ALL_NAV: NavEntry[] = [
       { type: 'leaf', name: 'config_smtp', module: 'smtp_settings', label: 'SMTP Settings', path: '/config/smtp', icon: ICONS.smtp },
     ],
   },
+  // Help is never gated. Someone locked out of every module still needs to be
+  // able to read why, and how to ask for access. The manual filters its own
+  // contents by the same permissions, so this shows nothing they cannot use.
+  { type: 'leaf', name: 'manual', module: 'manual', label: 'User Manual', path: '/manual', icon: ICONS.manual, alwaysVisible: true },
 ];
 
 interface Props {
@@ -88,7 +95,7 @@ export default function Sidebar({ currentPath, onNavigate, notificationCount, co
   function getVisibleNav(): NavEntry[] {
     return ALL_NAV.reduce<NavEntry[]>((acc, entry) => {
       if (entry.type === 'leaf') {
-        if (canNavigate(entry.module)) acc.push(entry);
+        if (entry.alwaysVisible || canNavigate(entry.module)) acc.push(entry);
       } else {
         const visibleChildren = entry.children.filter((child) => canNavigate(child.module));
         if (visibleChildren.length > 0) {

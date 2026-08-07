@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { MessageCircle, X, Send, Minimize2, Maximize2, Bot, User, Loader2, Trash2, AlertTriangle, ShieldAlert, Plus, ArrowLeft, Clock } from 'lucide-react';
 import { supabase, ChatLog, ChatMessage } from '../../lib/supabase';
+import { postToWebhookProxy, fetchActiveWebhook } from '../../lib/webhookProxy';
 import { useAuth } from '../../contexts/AuthContext';
 import { logAuditEvent } from '../../lib/audit';
 import ConfirmModal from '../ConfirmModal';
 import AccessRequestModal from '../AccessRequestModal';
 
-const PROXY_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/webhook-proxy`;
 
 const RESPONSE_FIELD_CANDIDATES = ['reply', 'message', 'text', 'response', 'content', 'output', 'answer'];
 
@@ -72,10 +72,11 @@ function formatListTime(dateStr: string) {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
+// No url: the proxy resolves the endpoint itself from the id, so the browser
+// never needs to hold it.
 interface ActiveWebhook {
   id: string;
   name: string;
-  url: string;
 }
 
 type ViewState = 'list' | 'compose';
@@ -103,7 +104,7 @@ export default function FloatingChatbox() {
   const canDelete = isSuperAdmin() || hasPermission('chatbot', 'delete');
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
-  useEffect(() => { fetchActiveWebhook(); }, []);
+  useEffect(() => { loadActiveWebhook(); }, []);
 
   // Real-time subscription for messages in the active conversation
   useEffect(() => {
@@ -134,15 +135,11 @@ export default function FloatingChatbox() {
     return () => { supabase.removeChannel(channel); };
   }, [activeConversation?.id, open, minimized]);
 
-  async function fetchActiveWebhook() {
-    const { data } = await supabase
-      .from('webhook_configs')
-      .select('id, name, url')
-      .eq('is_active', true)
-      .order('created_at')
-      .limit(1)
-      .maybeSingle();
-    if (data) setActiveWebhook(data);
+  async function loadActiveWebhook() {
+    // Id and name only. See the note in ChatbotPage: webhook_configs carries
+    // the endpoint URL and the integration's headers, neither needed here.
+    const { webhook } = await fetchActiveWebhook();
+    if (webhook) setActiveWebhook(webhook);
   }
 
   async function fetchConversations() {
@@ -218,7 +215,7 @@ export default function FloatingChatbox() {
     setOpen(true);
     setMinimized(false);
     setUnreadCount(0);
-    await fetchActiveWebhook();
+    await loadActiveWebhook();
     await fetchConversations();
   }
 
@@ -234,25 +231,18 @@ export default function FloatingChatbox() {
 
     if (activeWebhook) {
       try {
-        await fetch(PROXY_URL, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+        await postToWebhookProxy(
+          activeWebhook.id,
+          {
+            type: 'message_deleted',
+            session_id: activeConversation.session_id,
+            message_id: msg.id,
+            deleted_by: user?.id,
+            timestamp: new Date().toISOString(),
           },
-          body: JSON.stringify({
-            url: activeWebhook.url,
-            payload: {
-              type: 'message_deleted',
-              session_id: activeConversation.session_id,
-              message_id: msg.id,
-              deleted_by: user?.id,
-              timestamp: new Date().toISOString(),
-            },
-            timeout: 5000,
-          }),
-          signal: AbortSignal.timeout(10000),
-        });
+          5000,
+          10000,
+        );
       } catch {
         // Non-blocking
       }
@@ -344,15 +334,7 @@ export default function FloatingChatbox() {
     // Non-blocking webhook call
     (async () => {
       try {
-        const res = await fetch(PROXY_URL, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-          },
-          body: JSON.stringify({ url: activeWebhook.url, payload, timeout: 60000 }),
-          signal: AbortSignal.timeout(120000),
-        });
+        const res = await postToWebhookProxy(activeWebhook.id, payload, 60000, 120000);
 
         if (res.ok) {
           const proxyData = await res.json().catch(() => null);

@@ -5,6 +5,7 @@ import {
   Clock, Code, Activity, Info, Zap, AlertOctagon,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { postToWebhookProxy } from '../../lib/webhookProxy';
 import { useAuth } from '../../contexts/AuthContext';
 import { logAuditEvent } from '../../lib/audit';
 import ConfirmModal from '../../components/ConfirmModal';
@@ -158,7 +159,6 @@ export default function ChatbotSetupPage() {
     fetchRecentInteractions();
   }
 
-  const PROXY_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/webhook-proxy`;
 
   async function sendWebhookRequest(
     webhook: WebhookConfig,
@@ -169,19 +169,7 @@ export default function ChatbotSetupPage() {
     const ts = new Date().toISOString();
 
     try {
-      const res = await fetch(PROXY_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-        },
-        body: JSON.stringify({
-          url: webhook.url,
-          payload,
-          timeout: timeoutMs,
-        }),
-        signal: AbortSignal.timeout(timeoutMs + 5000),
-      });
+      const res = await postToWebhookProxy(webhook.id, payload, timeoutMs, timeoutMs + 5000);
 
       const latencyMs = Date.now() - start;
       const proxyResponse = await res.json();
