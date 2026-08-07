@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { MessageCircle, Send, Paperclip, X, Loader2, RefreshCw, User, Bot, ChevronRight, Trash2, AlertTriangle, Zap } from 'lucide-react';
+import { MessageCircle, Send, Paperclip, X, Loader2, RefreshCw, User, Bot, Trash2, AlertTriangle, Zap, ListChecks, Check } from 'lucide-react';
 import { supabase, ChatLog, ChatMessage } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { logAuditEvent } from '../lib/audit';
@@ -63,6 +63,12 @@ export default function ChatbotPage() {
 
   const [confirmDeleteSession, setConfirmDeleteSession] = useState<ChatLog | null>(null);
   const [confirmDeleteMsg, setConfirmDeleteMsg] = useState<ChatMessage | null>(null);
+
+  // Bulk selection
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   useEffect(() => { fetchActiveWebhook(); fetchChatLogs(); }, []);
   useEffect(() => { if (selectedLog) fetchMessages(selectedLog.id); }, [selectedLog]);
@@ -168,6 +174,68 @@ export default function ChatbotPage() {
       setMessages([]);
     }
     setConfirmDeleteSession(null);
+  }
+
+  function toggleSelected(id: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    setSelectedIds((prev) =>
+      prev.size === chatLogs.length ? new Set() : new Set(chatLogs.map((l) => l.id))
+    );
+  }
+
+  function exitSelectMode() {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  }
+
+  async function handleBulkDelete() {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    setBulkDeleting(true);
+
+    // Messages first: chat_messages.chat_log_id is ON DELETE CASCADE, but deleting
+    // explicitly keeps this consistent with the single-session path above.
+    const { error: msgError } = await supabase.from('chat_messages').delete().in('chat_log_id', ids);
+    if (msgError) {
+      setBulkDeleting(false);
+      setConfirmBulkDelete(false);
+      return;
+    }
+
+    const { error: logError } = await supabase.from('chat_logs').delete().in('id', ids);
+    if (logError) {
+      setBulkDeleting(false);
+      setConfirmBulkDelete(false);
+      return;
+    }
+
+    // One audit entry per session, matching the single-delete action name so the
+    // audit log stays queryable by action.
+    const deleted = chatLogs.filter((l) => selectedIds.has(l.id));
+    await Promise.all(
+      deleted.map((log) =>
+        logAuditEvent(user?.id || null, 'delete_session', 'chatbot', log.id, 'chat_log', {
+          session_id: log.session_id, participant_name: log.participant_name, bulk: true,
+        })
+      )
+    );
+
+    setChatLogs((prev) => prev.filter((l) => !selectedIds.has(l.id)));
+    if (selectedLog && selectedIds.has(selectedLog.id)) {
+      setSelectedLog(null);
+      setMessages([]);
+    }
+    setBulkDeleting(false);
+    setConfirmBulkDelete(false);
+    exitSelectMode();
   }
 
   async function handleDeleteMessage() {
@@ -369,10 +437,50 @@ export default function ChatbotPage() {
             <MessageCircle className="w-4 h-4 text-blue-400" />
             <span className="text-white font-medium text-sm">Chat Sessions</span>
           </div>
-          <button onClick={startNewSession} title="New session" className="p-1.5 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded-lg transition-colors">
-            <MessageCircle className="w-3.5 h-3.5" />
-          </button>
+          <div className="flex items-center gap-1.5">
+            {chatLogs.length > 0 && (
+              <button
+                onClick={() => (selectMode ? exitSelectMode() : setSelectMode(true))}
+                title={selectMode ? 'Cancel selection' : 'Select sessions'}
+                className={`p-1.5 rounded-lg transition-colors ${
+                  selectMode
+                    ? 'bg-slate-500/30 text-slate-200'
+                    : 'bg-white/5 hover:bg-white/10 text-slate-400'
+                }`}
+              >
+                {selectMode ? <X className="w-3.5 h-3.5" /> : <ListChecks className="w-3.5 h-3.5" />}
+              </button>
+            )}
+            <button onClick={startNewSession} title="New session" className="p-1.5 bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded-lg transition-colors">
+              <MessageCircle className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
+
+        {selectMode && (
+          <div className="px-4 py-2 border-b border-white/5 bg-white/5 flex items-center justify-between gap-2">
+            <button
+              onClick={toggleSelectAll}
+              className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+            >
+              {selectedIds.size === chatLogs.length ? 'Clear all' : 'Select all'}
+            </button>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-400">{selectedIds.size} selected</span>
+              <button
+                onClick={() => {
+                  if (!canDelete) { setAccessRequest({ module: 'chatbot', action: 'delete' }); return; }
+                  setConfirmBulkDelete(true);
+                }}
+                disabled={selectedIds.size === 0}
+                className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs bg-red-500/10 text-red-400 hover:bg-red-500/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Delete
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className={`px-4 py-2 border-b border-white/5 flex items-center gap-2 ${activeWebhook ? 'bg-emerald-500/5' : 'bg-amber-500/5'}`}>
           <span className={`w-1.5 h-1.5 rounded-full ${activeWebhook ? 'bg-emerald-400' : 'bg-amber-400'}`} />
@@ -397,25 +505,39 @@ export default function ChatbotPage() {
               {chatLogs.map((log) => (
                 <li key={log.id} className="relative">
                   <button
-                    onClick={() => setSelectedLog(log)}
-                    className={`w-full text-left p-4 hover:bg-white/5 transition-colors ${selectedLog?.id === log.id ? 'bg-white/5' : ''}`}
+                    onClick={() => (selectMode ? toggleSelected(log.id) : setSelectedLog(log))}
+                    className={`w-full text-left p-4 hover:bg-white/5 transition-colors ${selectedLog?.id === log.id && !selectMode ? 'bg-white/5' : ''} ${selectMode && selectedIds.has(log.id) ? 'bg-blue-500/10' : ''}`}
                   >
-                    <div className="flex items-center justify-between">
-                      <span className="text-white text-sm font-medium truncate pr-8">{log.participant_name || 'Chat'}</span>
-                      <ChevronRight className="w-3.5 h-3.5 text-slate-500" />
+                    <div className="flex items-start gap-2.5">
+                      {selectMode && (
+                        <span
+                          className={`mt-0.5 w-4 h-4 flex-shrink-0 rounded border flex items-center justify-center transition-colors ${
+                            selectedIds.has(log.id)
+                              ? 'bg-blue-500 border-blue-500'
+                              : 'border-white/20'
+                          }`}
+                        >
+                          {selectedIds.has(log.id) && <Check className="w-3 h-3 text-white" />}
+                        </span>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <span className="block text-white text-sm font-medium truncate pr-8">{log.participant_name || 'Chat'}</span>
+                        <p className="text-slate-500 text-xs mt-0.5">{new Date(log.started_at).toLocaleDateString()}</p>
+                        <span className={`text-xs px-1.5 py-0.5 rounded mt-1 inline-block ${log.status === 'active' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-500/20 text-slate-400'}`}>
+                          {log.status}
+                        </span>
+                      </div>
                     </div>
-                    <p className="text-slate-500 text-xs mt-0.5">{new Date(log.started_at).toLocaleDateString()}</p>
-                    <span className={`text-xs px-1.5 py-0.5 rounded mt-1 inline-block ${log.status === 'active' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-500/20 text-slate-400'}`}>
-                      {log.status}
-                    </span>
                   </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); if (!canDelete) { setAccessRequest({ module: 'chatbot', action: 'delete' }); return; } setConfirmDeleteSession(log); }}
-                    className="absolute top-3 right-3 p-1.5 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all z-10"
-                    title="Delete session"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  {!selectMode && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); if (!canDelete) { setAccessRequest({ module: 'chatbot', action: 'delete' }); return; } setConfirmDeleteSession(log); }}
+                      className="absolute top-3 right-3 p-1.5 text-slate-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg transition-all z-10"
+                      title="Delete session"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                 </li>
               ))}
             </ul>
@@ -591,6 +713,17 @@ export default function ChatbotPage() {
         variant="danger"
         onConfirm={handleDeleteSession}
         onCancel={() => setConfirmDeleteSession(null)}
+      />
+
+      {/* Bulk Delete Confirmation */}
+      <ConfirmModal
+        open={confirmBulkDelete}
+        title={`Delete ${selectedIds.size} Session${selectedIds.size === 1 ? '' : 's'}`}
+        message={`Delete ${selectedIds.size} selected session${selectedIds.size === 1 ? '' : 's'}? All messages in ${selectedIds.size === 1 ? 'it' : 'them'} will be permanently removed.`}
+        confirmLabel={bulkDeleting ? 'Deleting...' : 'Delete'}
+        variant="danger"
+        onConfirm={handleBulkDelete}
+        onCancel={() => setConfirmBulkDelete(false)}
       />
 
       {/* Delete Message Confirmation */}
