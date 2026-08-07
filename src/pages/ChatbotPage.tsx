@@ -1,12 +1,12 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { MessageCircle, Send, Paperclip, X, Loader2, RefreshCw, User, Bot, Trash2, AlertTriangle, Zap, ListChecks, Check } from 'lucide-react';
 import { supabase, ChatLog, ChatMessage } from '../lib/supabase';
+import { postToWebhookProxy } from '../lib/webhookProxy';
 import { useAuth } from '../contexts/AuthContext';
 import { logAuditEvent } from '../lib/audit';
 import ConfirmModal from '../components/ConfirmModal';
 import AccessRequestModal from '../components/AccessRequestModal';
 
-const PROXY_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/webhook-proxy`;
 
 const RESPONSE_FIELD_CANDIDATES = ['reply', 'message', 'text', 'response', 'content', 'output', 'answer'];
 
@@ -37,10 +37,11 @@ function extractReply(data: Record<string, unknown>): string | null {
   return null;
 }
 
+// No url: the proxy resolves the endpoint itself from the id, so the browser
+// never needs to hold it.
 interface ActiveWebhook {
   id: string;
   name: string;
-  url: string;
 }
 
 export default function ChatbotPage() {
@@ -103,15 +104,20 @@ export default function ChatbotPage() {
   }, [selectedLog?.id]);
 
   async function fetchActiveWebhook() {
-    const { data } = await supabase
-      .from('webhook_configs')
-      .select('id, name, url')
-      .eq('is_active', true)
-      .order('created_at')
-      .limit(1)
-      .maybeSingle();
-    if (data) {
-      setActiveWebhook(data);
+    // rpc, not a table read: webhook_configs holds the endpoint URL and a
+    // headers jsonb that carries the integration's token, and this page only
+    // needs an id to call the proxy with and a name to display.
+    const { data, error } = await supabase.rpc('get_active_webhook');
+    const active = Array.isArray(data) ? data[0] : data;
+
+    if (error) {
+      setActiveWebhook(null);
+      setWebhookError(`Could not check the webhook connection: ${error.message}`);
+      return;
+    }
+
+    if (active) {
+      setActiveWebhook(active as ActiveWebhook);
       setWebhookError(null);
     } else {
       setActiveWebhook(null);
@@ -250,25 +256,18 @@ export default function ChatbotPage() {
 
     if (selectedLog && activeWebhook) {
       try {
-        await fetch(PROXY_URL, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+        await postToWebhookProxy(
+          activeWebhook.id,
+          {
+            type: 'message_deleted',
+            session_id: selectedLog.session_id,
+            message_id: msg.id,
+            deleted_by: user?.id,
+            timestamp: new Date().toISOString(),
           },
-          body: JSON.stringify({
-            url: activeWebhook.url,
-            payload: {
-              type: 'message_deleted',
-              session_id: selectedLog.session_id,
-              message_id: msg.id,
-              deleted_by: user?.id,
-              timestamp: new Date().toISOString(),
-            },
-            timeout: 5000,
-          }),
-          signal: AbortSignal.timeout(10000),
-        });
+          5000,
+          10000,
+        );
       } catch {
         // Non-blocking
       }
@@ -347,15 +346,7 @@ export default function ChatbotPage() {
     (async () => {
       const start = Date.now();
       try {
-        const response = await fetch(PROXY_URL, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-          },
-          body: JSON.stringify({ url: activeWebhook.url, payload, timeout: 60000 }),
-          signal: AbortSignal.timeout(120000),
-        });
+        const response = await postToWebhookProxy(activeWebhook.id, payload, 60000, 120000);
 
         const latencyMs = Date.now() - start;
 

@@ -1,4 +1,25 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "jsr:@supabase/supabase-js@2";
+
+/*
+ * This function used to take a `url` straight from the request body and POST to
+ * it, returning the response body to the caller, with five retries and a
+ * timeout of up to two minutes. The only gate was the platform's verify_jwt,
+ * which the anon key satisfies, and the anon key ships in the browser bundle
+ * served to anyone who loads the login page.
+ *
+ * That made it a server-side request forgery proxy with a public key: arbitrary
+ * outbound POST to any address, response returned to the caller, traffic
+ * originating from Supabase infrastructure. Confirmed by sending an
+ * unauthenticated request (401) and then the same request with the shipped anon
+ * key, which returned a DNS error for the attacker-chosen host, proving the
+ * fetch was attempted.
+ *
+ * The caller now names a webhook by id and the URL is read from
+ * webhook_configs with service_role, so the destination can only ever be one an
+ * administrator configured. The token must belong to a real active user; the
+ * anon key resolves to no user and is rejected.
+ */
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -6,6 +27,13 @@ const corsHeaders = {
   "Access-Control-Allow-Headers":
     "Content-Type, Authorization, X-Client-Info, Apikey",
 };
+
+function json(body: unknown, status: number) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
 
 async function attemptFetch(
   url: string,
@@ -36,15 +64,60 @@ Deno.serve(async (req: Request) => {
   }
 
   try {
-    const { url, payload, timeout } = await req.json();
-
-    if (!url || typeof url !== "string") {
-      return new Response(
-        JSON.stringify({ error: "Missing or invalid 'url' field" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader) {
+      return json({ error: "Missing authorization" }, 401);
     }
 
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+
+    const callerClient = createClient(supabaseUrl, serviceRoleKey, {
+      global: { headers: { Authorization: authHeader } },
+    });
+
+    // The anon key carries no user, so this is what rejects it.
+    const { data: { user: caller } } = await callerClient.auth.getUser();
+    if (!caller) {
+      return json({ error: "Unauthorized" }, 401);
+    }
+
+    const adminClient = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
+
+    const { data: callerProfile } = await adminClient
+      .from("profiles")
+      .select("is_active")
+      .eq("id", caller.id)
+      .maybeSingle();
+
+    if (!callerProfile || !callerProfile.is_active) {
+      return json({ error: "Your account is not active." }, 403);
+    }
+
+    const { webhook_id, payload, timeout } = await req.json();
+
+    if (!webhook_id || typeof webhook_id !== "string") {
+      return json({ error: "Missing or invalid 'webhook_id' field" }, 400);
+    }
+
+    // The destination comes from the database, never from the caller. This is
+    // the whole fix: a caller can only reach a configured webhook.
+    const { data: webhook, error: webhookError } = await adminClient
+      .from("webhook_configs")
+      .select("id, url")
+      .eq("id", webhook_id)
+      .maybeSingle();
+
+    if (webhookError) {
+      return json({ error: `Could not load webhook: ${webhookError.message}` }, 500);
+    }
+    if (!webhook || !webhook.url) {
+      return json({ error: "No such webhook is configured" }, 404);
+    }
+
+    const url = webhook.url as string;
     const timeoutMs = typeof timeout === "number" ? Math.min(timeout, 120000) : 30000;
     const maxRetries = 5;
     let lastError: unknown = null;
@@ -56,19 +129,13 @@ Deno.serve(async (req: Request) => {
         const latencyMs = Date.now() - start;
         const body = await response.text();
 
-        return new Response(
-          JSON.stringify({
-            status: response.status,
-            statusText: response.statusText,
-            body,
-            latencyMs,
-            attempt: attempt + 1,
-          }),
-          {
-            status: 200,
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
-          }
-        );
+        return json({
+          status: response.status,
+          statusText: response.statusText,
+          body,
+          latencyMs,
+          attempt: attempt + 1,
+        }, 200);
       } catch (err) {
         lastError = err;
         if (attempt < maxRetries - 1) {
@@ -85,21 +152,9 @@ Deno.serve(async (req: Request) => {
         ? lastError.message
         : "Unknown error";
 
-    return new Response(
-      JSON.stringify({ error: message, retries: maxRetries }),
-      {
-        status: 502,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
-    );
+    return json({ error: message, retries: maxRetries }, 502);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    return new Response(
-      JSON.stringify({ error: message }),
-      {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
-    );
+    return json({ error: message }, 500);
   }
 });
