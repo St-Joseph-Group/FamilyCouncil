@@ -98,7 +98,10 @@ export default function LoginPage({ onForgotPassword }: Props) {
                   aria-pressed={showPassword}
                   aria-controls="login-password"
                   title={showPassword ? 'Hide password' : 'Show password'}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 transition-colors"
+                  // The icon is 20px, well under the 44px minimum. The ::before
+                  // extends the hit area to 44px without moving the icon or
+                  // changing the input's padding.
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 transition-colors before:absolute before:-inset-3 before:content-['']"
                 >
                   {showPassword ? <EyeOff className="w-5 h-5" aria-hidden="true" /> : <Eye className="w-5 h-5" aria-hidden="true" />}
                 </button>
@@ -132,7 +135,8 @@ export default function LoginPage({ onForgotPassword }: Props) {
             <button
               type="button"
               onClick={onForgotPassword}
-              className="w-full text-center text-sm text-slate-400 hover:text-blue-400 transition-colors"
+              // py-3 takes this from a 20px line of text to a 44px target
+              className="w-full text-center text-sm text-slate-400 hover:text-blue-400 transition-colors py-3 rounded-xl hover:bg-white/5"
             >
               Forgot your password?
             </button>
