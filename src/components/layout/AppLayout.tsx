@@ -28,6 +28,8 @@ const PAGE_TITLES: Record<string, string> = {
   '/config/audit': 'Audit Logs',
   '/config/roles': 'Roles & Permissions',
   '/config/chatbot': 'Chatbot Setup',
+  '/config/smtp': 'SMTP Settings',
+  '/manual': 'User Manual',
 };
 
 export default function AppLayout({ children, currentPath, onNavigate }: Props) {

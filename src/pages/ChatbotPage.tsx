@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { MessageCircle, Send, Paperclip, X, Loader2, RefreshCw, User, Bot, Trash2, AlertTriangle, Zap, ListChecks, Check } from 'lucide-react';
 import { supabase, ChatLog, ChatMessage } from '../lib/supabase';
-import { postToWebhookProxy } from '../lib/webhookProxy';
+import { postToWebhookProxy, fetchActiveWebhook } from '../lib/webhookProxy';
 import { useAuth } from '../contexts/AuthContext';
 import { logAuditEvent } from '../lib/audit';
 import ConfirmModal from '../components/ConfirmModal';
@@ -71,7 +71,7 @@ export default function ChatbotPage() {
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
 
-  useEffect(() => { fetchActiveWebhook(); fetchChatLogs(); }, []);
+  useEffect(() => { loadActiveWebhook(); fetchChatLogs(); }, []);
   useEffect(() => { if (selectedLog) fetchMessages(selectedLog.id); }, [selectedLog]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
@@ -103,21 +103,19 @@ export default function ChatbotPage() {
     return () => { supabase.removeChannel(channel); };
   }, [selectedLog?.id]);
 
-  async function fetchActiveWebhook() {
-    // rpc, not a table read: webhook_configs holds the endpoint URL and a
-    // headers jsonb that carries the integration's token, and this page only
-    // needs an id to call the proxy with and a name to display.
-    const { data, error } = await supabase.rpc('get_active_webhook');
-    const active = Array.isArray(data) ? data[0] : data;
+  async function loadActiveWebhook() {
+    // Id and name only. webhook_configs holds the endpoint URL and a headers
+    // jsonb carrying the integration's token, neither of which this page needs.
+    const { webhook, error } = await fetchActiveWebhook();
 
     if (error) {
       setActiveWebhook(null);
-      setWebhookError(`Could not check the webhook connection: ${error.message}`);
+      setWebhookError(`Could not check the webhook connection: ${error}`);
       return;
     }
 
-    if (active) {
-      setActiveWebhook(active as ActiveWebhook);
+    if (webhook) {
+      setActiveWebhook(webhook);
       setWebhookError(null);
     } else {
       setActiveWebhook(null);

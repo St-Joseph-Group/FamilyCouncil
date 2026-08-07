@@ -14,20 +14,26 @@ import AuditLogsPage from './pages/AuditLogsPage';
 import RolesPermissionsPage from './pages/RolesPermissionsPage';
 import NotificationsPage from './pages/NotificationsPage';
 import ProfilePage from './pages/ProfilePage';
+
+// The manual is a large block of static prose that most sessions never open, so
+// it is split out rather than carried in the initial bundle.
+const UserManualPage = React.lazy(() => import('./pages/UserManualPage'));
 import ChatbotSetupPage from './pages/config/ChatbotSetupPage';
 import SmtpSettingsPage from './pages/config/SmtpSettingsPage';
 import FloatingChatbox from './components/chatbot/FloatingChatbox';
 import ErrorBoundary from './components/ErrorBoundary';
 import { supabase } from './lib/supabase';
-import { Shield, Loader2, ShieldAlert, RefreshCw } from 'lucide-react';
+import { Shield, Loader2, ShieldAlert, RefreshCw, BookOpen } from 'lucide-react';
 
 type AuthScreen = 'login' | 'forgot-password';
 
 // Shown when a user has no navigable page at all, or lands on one they cannot access.
 const NO_ACCESS = '/no-access';
 
-// Reachable regardless of role — every signed-in user owns these.
-const ALWAYS_ALLOWED = ['/profile', '/change-password'];
+// Reachable regardless of role — every signed-in user owns these, and help is
+// never gated: someone with no module access still needs to read why, and how
+// to ask for it. The manual filters its own contents by the same permissions.
+const ALWAYS_ALLOWED = ['/profile', '/change-password', '/manual'];
 
 const NAV_ORDER: { module: string; path: string }[] = [
   { module: 'dashboard', path: '/dashboard' },
@@ -74,7 +80,9 @@ function AppInner() {
         setCurrentPath('/dashboard');
       } else {
         const firstAllowed = NAV_ORDER.find((n) => hasPermission(n.module, 'navigate'));
-        setCurrentPath(firstAllowed?.path || NO_ACCESS);
+        // With no module at all, land on the manual rather than a dead end. It
+        // explains why the menu is empty and how to ask for access.
+        setCurrentPath(firstAllowed?.path || '/manual');
       }
       setHasRedirected(true);
     }
@@ -162,10 +170,18 @@ function AppInner() {
             <ShieldAlert className="w-7 h-7 text-red-400" />
           </div>
           <h3 className="text-white font-semibold text-lg mb-2">No access</h3>
-          <p className="text-slate-400 text-sm max-w-sm">
+          <p className="text-slate-400 text-sm max-w-sm mb-6">
             You do not have permission to view this page. Contact an administrator if you
             believe this is a mistake.
           </p>
+          {/* Never leave someone at a dead end with no next step. */}
+          <button
+            onClick={() => setCurrentPath('/manual')}
+            className="flex items-center gap-2 min-h-[44px] px-5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-sm font-medium transition-colors"
+          >
+            <BookOpen className="w-4 h-4" aria-hidden="true" />
+            Read the user manual
+          </button>
         </div>
       );
     }
@@ -176,6 +192,19 @@ function AppInner() {
       case '/meetings': return <MeetingsPage />;
       case '/chatbot': return <ChatbotPage />;
       case '/notifications': return <NotificationsPage />;
+      case '/manual':
+        return (
+          <React.Suspense
+            fallback={
+              <div className="flex items-center justify-center py-20 text-slate-400 gap-2">
+                <Loader2 className="w-5 h-5 animate-spin" aria-hidden="true" />
+                <span>Loading the manual…</span>
+              </div>
+            }
+          >
+            <UserManualPage />
+          </React.Suspense>
+        );
       case '/profile': return <ProfilePage />;
       case '/change-password':
         return (

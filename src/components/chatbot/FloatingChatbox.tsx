@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { MessageCircle, X, Send, Minimize2, Maximize2, Bot, User, Loader2, Trash2, AlertTriangle, ShieldAlert, Plus, ArrowLeft, Clock } from 'lucide-react';
 import { supabase, ChatLog, ChatMessage } from '../../lib/supabase';
-import { postToWebhookProxy } from '../../lib/webhookProxy';
+import { postToWebhookProxy, fetchActiveWebhook } from '../../lib/webhookProxy';
 import { useAuth } from '../../contexts/AuthContext';
 import { logAuditEvent } from '../../lib/audit';
 import ConfirmModal from '../ConfirmModal';
@@ -104,7 +104,7 @@ export default function FloatingChatbox() {
   const canDelete = isSuperAdmin() || hasPermission('chatbot', 'delete');
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
-  useEffect(() => { fetchActiveWebhook(); }, []);
+  useEffect(() => { loadActiveWebhook(); }, []);
 
   // Real-time subscription for messages in the active conversation
   useEffect(() => {
@@ -135,13 +135,11 @@ export default function FloatingChatbox() {
     return () => { supabase.removeChannel(channel); };
   }, [activeConversation?.id, open, minimized]);
 
-  async function fetchActiveWebhook() {
-    // rpc, not a table read. See the note in ChatbotPage: webhook_configs
-    // carries the endpoint URL and the integration's headers, and this only
-    // needs an id and a name.
-    const { data } = await supabase.rpc('get_active_webhook');
-    const active = Array.isArray(data) ? data[0] : data;
-    if (active) setActiveWebhook(active as ActiveWebhook);
+  async function loadActiveWebhook() {
+    // Id and name only. See the note in ChatbotPage: webhook_configs carries
+    // the endpoint URL and the integration's headers, neither needed here.
+    const { webhook } = await fetchActiveWebhook();
+    if (webhook) setActiveWebhook(webhook);
   }
 
   async function fetchConversations() {
@@ -217,7 +215,7 @@ export default function FloatingChatbox() {
     setOpen(true);
     setMinimized(false);
     setUnreadCount(0);
-    await fetchActiveWebhook();
+    await loadActiveWebhook();
     await fetchConversations();
   }
 

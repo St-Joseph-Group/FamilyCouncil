@@ -34,11 +34,14 @@ Deno.serve(async (req: Request) => {
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
     const callerClient = createClient(supabaseUrl, serviceRoleKey, {
-      global: { headers: { Authorization: authHeader } },
+      auth: { autoRefreshToken: false, persistSession: false },
     });
 
-    const { data: { user: caller } } = await callerClient.auth.getUser();
-    if (!caller) {
+    // Token passed explicitly. getUser() with no argument looks for a stored
+    // session, which an edge function never has.
+    const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+    const { data: { user: caller }, error: callerError } = await callerClient.auth.getUser(token);
+    if (callerError || !caller) {
       return new Response(
         JSON.stringify({ success: false, message: "Unauthorized" }),
         { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } }

@@ -187,13 +187,21 @@ Deno.serve(async (req: Request) => {
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
+    // getUser() must be given the token explicitly. Called with no argument it
+    // looks for a stored session, which an edge function never has, so it
+    // returns no user for a perfectly valid caller.
+    const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+    if (!token) {
+      return json({ success: false, message: "Missing authorization" }, 401);
+    }
+
     const callerClient = createClient(supabaseUrl, serviceRoleKey, {
-      global: { headers: { Authorization: authHeader } },
+      auth: { autoRefreshToken: false, persistSession: false },
     });
 
-    // Rejects the anon key: it carries no user, so this comes back null.
-    const { data: { user: caller } } = await callerClient.auth.getUser();
-    if (!caller) {
+    // Rejects the anon key: it is a valid JWT but resolves to no user.
+    const { data: { user: caller }, error: callerError } = await callerClient.auth.getUser(token);
+    if (callerError || !caller) {
       return json({ success: false, message: "Unauthorized" }, 401);
     }
 
