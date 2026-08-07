@@ -17,6 +17,7 @@ import ProfilePage from './pages/ProfilePage';
 import ChatbotSetupPage from './pages/config/ChatbotSetupPage';
 import SmtpSettingsPage from './pages/config/SmtpSettingsPage';
 import FloatingChatbox from './components/chatbot/FloatingChatbox';
+import ErrorBoundary from './components/ErrorBoundary';
 import { supabase } from './lib/supabase';
 import { Shield, Loader2, ShieldAlert } from 'lucide-react';
 
@@ -210,8 +211,10 @@ function AppInner() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <AppInner />
-    </AuthProvider>
+    <ErrorBoundary>
+      <AuthProvider>
+        <AppInner />
+      </AuthProvider>
+    </ErrorBoundary>
   );
 }

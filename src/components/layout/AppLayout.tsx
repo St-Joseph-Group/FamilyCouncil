@@ -35,8 +35,18 @@ export default function AppLayout({ children, currentPath, onNavigate }: Props) 
   const [notificationCount, setNotificationCount] = useState(0);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
-  const sidebarWidth = sidebarCollapsed ? 64 : 256;
   const title = PAGE_TITLES[currentPath] || 'Family Council';
+
+  // Below md the 256px sidebar leaves ~71px of usable width after padding, so
+  // content overflowed the viewport horizontally. Collapse to the icon rail.
+  useEffect(() => {
+    const apply = () => setSidebarCollapsed(window.innerWidth < 768);
+    apply();
+    window.addEventListener('resize', apply);
+    return () => window.removeEventListener('resize', apply);
+  }, []);
+
+  const sidebarWidth = sidebarCollapsed ? 64 : 256;
 
   useEffect(() => {
     if (!user) return;
@@ -64,6 +74,8 @@ export default function AppLayout({ children, currentPath, onNavigate }: Props) 
         currentPath={currentPath}
         onNavigate={onNavigate}
         notificationCount={notificationCount}
+        collapsed={sidebarCollapsed}
+        setCollapsed={setSidebarCollapsed}
       />
       <TopBar
         title={title}
