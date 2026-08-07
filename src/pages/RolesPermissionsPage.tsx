@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Shield, Plus, Trash2, X, Loader2, Check, Zap, Eye, PenTool } from 'lucide-react';
+import { Shield, Plus, Trash2, X, Loader2, Check, Zap, Eye, PenTool, AlertTriangle, RefreshCw } from 'lucide-react';
 import { supabase, Role, Permission } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { logAuditEvent } from '../lib/audit';
@@ -54,6 +54,7 @@ export default function RolesPermissionsPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
+  const [loadError, setLoadError] = useState('');
   const [newRoleName, setNewRoleName] = useState('');
   const [newRoleDisplay, setNewRoleDisplay] = useState('');
   const [newRoleDesc, setNewRoleDesc] = useState('');
@@ -67,10 +68,28 @@ export default function RolesPermissionsPage() {
 
   async function fetchData() {
     setLoading(true);
-    const [rolesRes, permsRes] = await Promise.all([
+    // One unfiltered read instead of one per role. role_permissions is readable
+    // by every authenticated user, so this returns the same rows, and it leaves
+    // a single error to check rather than N that can fail independently.
+    const [rolesRes, permsRes, rpRes] = await Promise.all([
       supabase.from('roles').select('*').order('display_name'),
       supabase.from('permissions').select('*').order('module').order('action'),
+      supabase.from('role_permissions').select('role_id, permission_id'),
     ]);
+
+    // These errors used to be discarded. A failed read yields data === null,
+    // which `|| []` turned into "this role has no permissions": the grid
+    // rendered every box unchecked, editingPerms was seeded from that empty
+    // set, and pressing Save wrote the emptiness back through
+    // set_role_permissions and stripped the role. Refuse to render a grid we
+    // cannot vouch for.
+    const failure = rolesRes.error || permsRes.error || rpRes.error;
+    if (failure) {
+      setLoadError(failure.message);
+      setLoading(false);
+      return;
+    }
+    setLoadError('');
 
     const rolesData = (rolesRes.data || []).filter(
       (r: { name: string }) => isSuperAdmin() || r.name !== 'super_admin'
@@ -78,16 +97,17 @@ export default function RolesPermissionsPage() {
     const permsData = permsRes.data || [];
     setAllPermissions(permsData);
 
-    const rolesWithPerms: RoleWithPermissions[] = await Promise.all(
-      rolesData.map(async (role) => {
-        const { data: rpData } = await supabase
-          .from('role_permissions')
-          .select('permission_id')
-          .eq('role_id', role.id);
-        const permIds = new Set((rpData || []).map((rp: { permission_id: string }) => rp.permission_id));
-        return { ...role, permissions: permsData.filter((p) => permIds.has(p.id)) };
-      })
-    );
+    const permIdsByRole = new Map<string, Set<string>>();
+    for (const rp of (rpRes.data || []) as { role_id: string; permission_id: string }[]) {
+      const existing = permIdsByRole.get(rp.role_id);
+      if (existing) existing.add(rp.permission_id);
+      else permIdsByRole.set(rp.role_id, new Set([rp.permission_id]));
+    }
+
+    const rolesWithPerms: RoleWithPermissions[] = rolesData.map((role) => {
+      const permIds = permIdsByRole.get(role.id) || new Set<string>();
+      return { ...role, permissions: permsData.filter((p) => permIds.has(p.id)) };
+    });
 
     setRoles(rolesWithPerms);
     if (rolesWithPerms.length > 0 && !selectedRole) {
@@ -122,6 +142,15 @@ export default function RolesPermissionsPage() {
 
   async function savePermissions() {
     if (!selectedRole) return;
+
+    // Belt and braces: the error state below replaces the grid, so this should
+    // be unreachable. Saving a permission set derived from a failed read is
+    // destructive enough to guard twice.
+    if (loadError) {
+      setSaveError('Permissions could not be loaded, so saving is disabled. Reload the page first.');
+      return;
+    }
+
     setSaving(true);
     setSaveError('');
 
@@ -189,6 +218,41 @@ export default function RolesPermissionsPage() {
   const NON_TABLE_MODULES = ['dashboard'];
   const crudPermissions = allPermissions.filter((p) => crudActions.includes(p.action) && !NON_TABLE_MODULES.includes(p.module));
   const crudModules = [...new Set(crudPermissions.map((p) => p.module))];
+
+  // Never render the grid from a load we could not complete. An unchecked box
+  // here is indistinguishable from a revoked permission, and Save persists it.
+  if (loadError) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 bg-red-500/20 rounded-xl flex items-center justify-center">
+            <AlertTriangle className="w-5 h-5 text-red-400" />
+          </div>
+          <div>
+            <h2 className="text-xl font-bold text-white">Roles &amp; Permissions</h2>
+            <p className="text-slate-400 text-sm">Could not load the current permissions</p>
+          </div>
+        </div>
+
+        <div className="bg-red-500/10 border border-red-500/20 rounded-2xl p-6 max-w-2xl">
+          <p className="text-red-300 text-sm font-medium mb-1">Permissions were not loaded</p>
+          <p className="text-slate-400 text-sm mb-1">
+            The grid is hidden on purpose. Showing it now would display every permission as
+            unchecked, and saving that would strip the role.
+          </p>
+          <p className="text-slate-500 text-xs font-mono break-words mb-4">{loadError}</p>
+          <button
+            onClick={fetchData}
+            disabled={loading}
+            className="flex items-center gap-2 px-4 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 text-white rounded-xl text-sm font-medium transition-all disabled:opacity-50"
+          >
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+            Try again
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
