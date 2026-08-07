@@ -93,6 +93,8 @@ export default function FloatingChatbox() {
   const [viewState, setViewState] = useState<ViewState>('list');
   const [unreadCount, setUnreadCount] = useState(0);
   const [activeWebhook, setActiveWebhook] = useState<ActiveWebhook | null>(null);
+  // Shown as a typing bubble while the assistant is composing a reply.
+  const [botTyping, setBotTyping] = useState(false);
   const [confirmDeleteMsg, setConfirmDeleteMsg] = useState<ChatMessage | null>(null);
   const [confirmDeleteConvo, setConfirmDeleteConvo] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -103,7 +105,8 @@ export default function FloatingChatbox() {
   const canRead = isSuperAdmin() || hasPermission('chatbot', 'read');
   const canDelete = isSuperAdmin() || hasPermission('chatbot', 'delete');
 
-  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  // botTyping included so the indicator scrolls into view when it appears.
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, botTyping]);
   useEffect(() => { loadActiveWebhook(); }, []);
 
   // Real-time subscription for messages in the active conversation
@@ -332,6 +335,7 @@ export default function FloatingChatbox() {
     };
 
     // Non-blocking webhook call
+    setBotTyping(true);
     (async () => {
       try {
         const res = await postToWebhookProxy(activeWebhook.id, payload, 60000, 120000);
@@ -386,6 +390,10 @@ export default function FloatingChatbox() {
           message_type: 'text',
           content: 'Message sent but response is still processing. It will appear when ready.',
         });
+      } finally {
+        // finally, so a failed or timed-out webhook cannot leave the indicator
+        // running forever. The catch block above awaits its own write.
+        setBotTyping(false);
       }
     })();
   }
@@ -628,6 +636,29 @@ export default function FloatingChatbox() {
                         );
                       })
                     )}
+
+                    {botTyping && (
+                      <div className="flex gap-2 justify-start">
+                        <div className="w-6 h-6 rounded-full bg-emerald-500/20 flex items-center justify-center flex-shrink-0">
+                          <Bot className="w-3 h-3 text-emerald-400" aria-hidden="true" />
+                        </div>
+                        <div
+                          className="bg-white/5 border border-white/10 rounded-2xl rounded-tl-sm px-3 py-2"
+                          role="status"
+                          aria-live="polite"
+                        >
+                          {/* Dots for sighted users, one sentence for screen
+                              readers, which must not hear three bouncing dots. */}
+                          <span className="sr-only">The assistant is typing a reply.</span>
+                          <span className="flex items-center gap-1" aria-hidden="true">
+                            <span className="w-1.5 h-1.5 rounded-full bg-slate-400 motion-safe:animate-bounce [animation-delay:-0.3s]" />
+                            <span className="w-1.5 h-1.5 rounded-full bg-slate-400 motion-safe:animate-bounce [animation-delay:-0.15s]" />
+                            <span className="w-1.5 h-1.5 rounded-full bg-slate-400 motion-safe:animate-bounce" />
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
                     <div ref={messagesEndRef} />
                   </div>
 
