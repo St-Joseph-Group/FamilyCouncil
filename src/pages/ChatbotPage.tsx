@@ -428,7 +428,7 @@ export default function ChatbotPage() {
   }
 
   return (
-    <div className="h-[calc(100vh-6rem)] flex gap-4">
+    <div className="page-fill-viewport flex gap-4">
       {/* Sidebar - Chat Sessions */}
       <div className="w-72 flex-shrink-0 flex flex-col bg-slate-800/50 border border-white/5 rounded-2xl overflow-hidden">
         <div className="p-4 border-b border-white/5 flex items-center justify-between">
