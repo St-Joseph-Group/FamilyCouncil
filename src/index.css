@@ -226,3 +226,21 @@ button, a {
   height: calc(100vh - 7rem);
   height: calc(100dvh - 7rem - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
 }
+
+/* AppLayout's <main> must use the SAME viewport unit as .page-fill-viewport
+   above. Tailwind's min-h-screen is 100vh; where a browser reports vh larger
+   than dvh, main would be taller than the visible viewport and the document
+   would scroll on every page, leaving dead space below a correctly sized
+   chatbot panel. Browsers without dvh keep the vh line. */
+.app-main-fill {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+/* Same reasoning for the fixed sidebar: h-screen is 100vh, which on a phone
+   pushes the user footer below the visible viewport. It is fixed, so it never
+   caused document scroll, only a cut-off footer. */
+.app-screen-fill {
+  height: 100vh;
+  height: 100dvh;
+}

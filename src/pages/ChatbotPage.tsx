@@ -61,7 +61,7 @@ export default function ChatbotPage() {
 
   const canCreate = isSuperAdmin() || hasPermission('chatbot', 'create');
   const canDelete = isSuperAdmin() || hasPermission('chatbot', 'delete');
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messageListRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [confirmDeleteSession, setConfirmDeleteSession] = useState<ChatLog | null>(null);
@@ -75,9 +75,14 @@ export default function ChatbotPage() {
 
   useEffect(() => { loadActiveWebhook(); fetchChatLogs(); }, []);
   useEffect(() => { if (selectedLog) fetchMessages(selectedLog.id); }, [selectedLog]);
-  // botTyping included so the indicator scrolls into view when it appears,
-  // rather than sitting below the fold where nobody sees it.
-  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, botTyping]);
+  // Scroll the transcript itself. scrollIntoView walks up the tree and scrolls
+  // every scrollable ancestor including the window, so a new message dragged
+  // the whole page down instead of just the conversation.
+  // botTyping is included so the indicator is visible the moment it appears.
+  useEffect(() => {
+    const list = messageListRef.current;
+    if (list) list.scrollTo({ top: list.scrollHeight, behavior: 'smooth' });
+  }, [messages, botTyping]);
 
   // Real-time subscription for messages in the selected conversation
   useEffect(() => {
@@ -589,7 +594,7 @@ export default function ChatbotPage() {
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            <div ref={messageListRef} className="flex-1 overflow-y-auto p-4 space-y-4">
               {msgLoading ? (
                 <div className="flex items-center justify-center py-8">
                   <Loader2 className="w-6 h-6 text-slate-400 animate-spin" />
@@ -686,8 +691,6 @@ export default function ChatbotPage() {
                   </div>
                 </div>
               )}
-
-              <div ref={messagesEndRef} />
             </div>
 
             <form onSubmit={sendMessage} className="p-4 border-t border-white/5">

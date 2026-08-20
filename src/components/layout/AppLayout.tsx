@@ -68,7 +68,7 @@ export default function AppLayout({ children, currentPath, onNavigate }: Props) 
   }
 
   return (
-    <div className="min-h-screen bg-slate-950">
+    <div className="app-main-fill bg-slate-950">
       <UpdateNotificationModal />
       <IdleTimeoutModal />
       <DbErrorBanner />
@@ -86,7 +86,7 @@ export default function AppLayout({ children, currentPath, onNavigate }: Props) 
         sidebarWidth={sidebarWidth}
       />
       <main
-        className="transition-all duration-300 pt-16 min-h-screen"
+        className="transition-all duration-300 pt-16 app-main-fill"
         style={{ marginLeft: sidebarWidth }}
       >
         <div className="p-6">

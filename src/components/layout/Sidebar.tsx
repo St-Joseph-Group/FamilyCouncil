@@ -123,7 +123,7 @@ export default function Sidebar({ currentPath, onNavigate, notificationCount, co
 
   return (
     <aside
-      className={`fixed top-0 left-0 h-screen bg-slate-900 border-r border-white/5 z-40 flex flex-col transition-all duration-300 ${collapsed ? 'w-16' : 'w-64'}`}
+      className={`fixed top-0 left-0 app-screen-fill bg-slate-900 border-r border-white/5 z-40 flex flex-col transition-all duration-300 ${collapsed ? 'w-16' : 'w-64'}`}
     >
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-white/5 h-16 flex-shrink-0">
