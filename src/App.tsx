@@ -24,6 +24,7 @@ import FloatingChatbox from './components/chatbot/FloatingChatbox';
 import ErrorBoundary from './components/ErrorBoundary';
 import { supabase } from './lib/supabase';
 import { Shield, Loader2, ShieldAlert, RefreshCw, BookOpen } from 'lucide-react';
+import { initNativeShell, useHardwareBackButton } from './lib/native';
 
 type AuthScreen = 'login' | 'forgot-password';
 
@@ -59,6 +60,15 @@ function AppInner() {
   const [authScreen, setAuthScreen] = useState<AuthScreen>('login');
   const [currentPath, setCurrentPath] = useState('');
   const [hasRedirected, setHasRedirected] = useState(false);
+  // Where Android's back button lands once there is nothing left to pop.
+  const [homePath, setHomePath] = useState('');
+
+  // Native shell styling; a no-op in the browser.
+  useEffect(() => {
+    initNativeShell();
+  }, []);
+
+  useHardwareBackButton(currentPath, setCurrentPath, homePath);
 
   useEffect(() => {
     if (session) {
@@ -78,11 +88,14 @@ function AppInner() {
     if (user && role && permissionsLoaded && !hasRedirected) {
       if (isSuperAdmin()) {
         setCurrentPath('/dashboard');
+        setHomePath('/dashboard');
       } else {
         const firstAllowed = NAV_ORDER.find((n) => hasPermission(n.module, 'navigate'));
         // With no module at all, land on the manual rather than a dead end. It
         // explains why the menu is empty and how to ask for access.
-        setCurrentPath(firstAllowed?.path || '/manual');
+        const landing = firstAllowed?.path || '/manual';
+        setCurrentPath(landing);
+        setHomePath(landing);
       }
       setHasRedirected(true);
     }
@@ -92,6 +105,7 @@ function AppInner() {
   useEffect(() => {
     if (!user && !loading) {
       setCurrentPath('');
+      setHomePath('');
       setHasRedirected(false);
     }
   }, [user, loading]);

@@ -24,3 +24,15 @@ dist-ssr
 .gstack/
 supabase/.temp/
 .netlify/
+
+# Capacitor native builds. The projects themselves are committed so signing
+# config and native tweaks are versioned; only build output is ignored.
+android/app/build/
+android/build/
+android/.gradle/
+android/local.properties
+android/app/src/main/assets/public/
+ios/App/App/public/
+ios/App/Pods/
+ios/App/output/
+ios/App/build/

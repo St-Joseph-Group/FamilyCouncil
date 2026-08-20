@@ -166,3 +166,63 @@ button, a {
 .bot-message-content div {
   margin: 0.4em 0;
 }
+
+/* ---------------------------------------------------------------------------
+   Native shell (Capacitor) support.
+   Only takes effect when the app runs inside the iOS/Android WebView, which
+   sets `.native-shell` on <html> at startup. In a normal browser these rules
+   are inert, so the web build is untouched.
+--------------------------------------------------------------------------- */
+
+/* iOS reports the notch and home indicator through env(). Without this the
+   header sits under the status bar and the bottom row under the home bar.
+   The fallbacks keep Android (which reports 0) unchanged. */
+.native-shell body {
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
+/* The WebView is the whole window; let the app own scrolling rather than
+   the document, so pull-to-refresh does not bounce the entire UI. */
+.native-shell,
+.native-shell body {
+  height: 100%;
+  overscroll-behavior-y: none;
+}
+
+/* Long-press text selection and the blue tap flash both read as "broken web
+   page" inside an app. Inputs and message text keep selection deliberately. */
+.native-shell body {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  user-select: none;
+}
+
+.native-shell input,
+.native-shell textarea,
+.native-shell [contenteditable],
+.native-shell .bot-message-content {
+  -webkit-touch-callout: default;
+  user-select: text;
+}
+
+/* ---------------------------------------------------------------------------
+   Pages that must fill the viewport instead of growing the document.
+
+   The chatbot is the only one: the conversation should scroll inside its own
+   panel, not drag the whole page with it. AppLayout reserves 4rem for the
+   fixed top bar and 1.5rem of padding above and below the page, so the space
+   actually available to a page is 100vh - 7rem. Anything taller pushes the
+   document past the viewport and the window gains a scrollbar.
+
+   The second declaration is a progressive upgrade: dvh tracks mobile browser
+   chrome as it hides, and the insets account for the padding .native-shell
+   puts on <body> inside the iOS/Android WebView. Browsers without dvh or
+   env() drop it and keep the plain vh line above.
+--------------------------------------------------------------------------- */
+.page-fill-viewport {
+  height: calc(100vh - 7rem);
+  height: calc(100dvh - 7rem - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+}
