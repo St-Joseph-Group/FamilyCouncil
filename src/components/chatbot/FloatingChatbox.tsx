@@ -97,7 +97,7 @@ export default function FloatingChatbox() {
   const [botTyping, setBotTyping] = useState(false);
   const [confirmDeleteMsg, setConfirmDeleteMsg] = useState<ChatMessage | null>(null);
   const [confirmDeleteConvo, setConfirmDeleteConvo] = useState<string | null>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messageListRef = useRef<HTMLDivElement>(null);
 
   const [accessRequest, setAccessRequest] = useState<{ module: string; action: string } | null>(null);
 
@@ -106,7 +106,12 @@ export default function FloatingChatbox() {
   const canDelete = isSuperAdmin() || hasPermission('chatbot', 'delete');
 
   // botTyping included so the indicator scrolls into view when it appears.
-  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, botTyping]);
+  // Scroll the transcript, not its ancestors: scrollIntoView would scroll the
+  // page behind this floating widget every time a message arrived.
+  useEffect(() => {
+    const list = messageListRef.current;
+    if (list) list.scrollTo({ top: list.scrollHeight, behavior: 'smooth' });
+  }, [messages, botTyping]);
   useEffect(() => { loadActiveWebhook(); }, []);
 
   // Real-time subscription for messages in the active conversation
@@ -563,7 +568,7 @@ export default function FloatingChatbox() {
                   </div>
 
                   {/* Messages */}
-                  <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
+                  <div ref={messageListRef} className="flex-1 overflow-y-auto p-3 space-y-2.5">
                     {!activeWebhook && (
                       <div className="flex items-center gap-2 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl">
                         <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
@@ -659,7 +664,6 @@ export default function FloatingChatbox() {
                       </div>
                     )}
 
-                    <div ref={messagesEndRef} />
                   </div>
 
                   {/* Quick Replies */}
