@@ -166,3 +166,44 @@ button, a {
 .bot-message-content div {
   margin: 0.4em 0;
 }
+
+/* ---------------------------------------------------------------------------
+   Native shell (Capacitor) support.
+   Only takes effect when the app runs inside the iOS/Android WebView, which
+   sets `.native-shell` on <html> at startup. In a normal browser these rules
+   are inert, so the web build is untouched.
+--------------------------------------------------------------------------- */
+
+/* iOS reports the notch and home indicator through env(). Without this the
+   header sits under the status bar and the bottom row under the home bar.
+   The fallbacks keep Android (which reports 0) unchanged. */
+.native-shell body {
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
+/* The WebView is the whole window; let the app own scrolling rather than
+   the document, so pull-to-refresh does not bounce the entire UI. */
+.native-shell,
+.native-shell body {
+  height: 100%;
+  overscroll-behavior-y: none;
+}
+
+/* Long-press text selection and the blue tap flash both read as "broken web
+   page" inside an app. Inputs and message text keep selection deliberately. */
+.native-shell body {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  user-select: none;
+}
+
+.native-shell input,
+.native-shell textarea,
+.native-shell [contenteditable],
+.native-shell .bot-message-content {
+  -webkit-touch-callout: default;
+  user-select: text;
+}
