@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { MessageCircle, X, Send, Minimize2, Maximize2, Bot, User, Loader2, Trash2, AlertTriangle, ShieldAlert, Plus, ArrowLeft, Clock } from 'lucide-react';
+import { MessageCircle, X, Send, Minimize2, Maximize2, Bot, User, Loader2, Trash2, AlertTriangle, ShieldAlert, Plus, ArrowLeft, Clock, Paperclip } from 'lucide-react';
 import { supabase, ChatLog, ChatMessage } from '../../lib/supabase';
 import { postToWebhookProxy, fetchActiveWebhook } from '../../lib/webhookProxy';
 import { useAuth } from '../../contexts/AuthContext';
 import { logAuditEvent } from '../../lib/audit';
+import { imageFromClipboard, uploadChatAttachment, isImageAttachment, UploadedAttachment } from '../../lib/chatAttachments';
 import ConfirmModal from '../ConfirmModal';
 import AccessRequestModal from '../AccessRequestModal';
 
@@ -89,6 +90,21 @@ export default function FloatingChatbox() {
   const [activeConversation, setActiveConversation] = useState<ChatLog | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
+  const [attachment, setAttachment] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [attachError, setAttachError] = useState<string | null>(null);
+  const attachInputRef = useRef<HTMLInputElement>(null);
+
+  // Local preview for a pending image, revoked on change so a long session of
+  // pasted screenshots does not leak object URLs.
+  const attachmentPreview = React.useMemo(
+    () => (attachment && attachment.type.startsWith('image/') ? URL.createObjectURL(attachment) : null),
+    [attachment],
+  );
+  React.useEffect(
+    () => () => { if (attachmentPreview) URL.revokeObjectURL(attachmentPreview); },
+    [attachmentPreview],
+  );
   const [loadingConvos, setLoadingConvos] = useState(false);
   const [viewState, setViewState] = useState<ViewState>('list');
   const [unreadCount, setUnreadCount] = useState(0);
@@ -300,25 +316,38 @@ export default function FloatingChatbox() {
 
   async function handleSend(e?: React.FormEvent) {
     e?.preventDefault();
-    if (!input.trim() || !activeConversation || !activeWebhook) return;
+    if ((!input.trim() && !attachment) || !activeConversation || !activeWebhook) return;
 
     if (!canCreate) {
       setAccessRequest({ module: 'chatbot', action: 'create' });
       return;
     }
 
-    const content = input.trim();
+    const content = input.trim() || (attachment ? attachment.name : '');
     const convoId = activeConversation.id;
     const sessionId = activeConversation.session_id;
+    const pendingFile = attachment;
     setInput('');
+    setAttachment(null);
+
+    // Upload before inserting so the row carries its attachment from the start.
+    let uploaded: UploadedAttachment | null = null;
+    if (pendingFile) {
+      setUploading(true);
+      uploaded = await uploadChatAttachment(pendingFile, convoId);
+      setUploading(false);
+      if (!uploaded) setAttachError('That file could not be uploaded, so the message was sent without it.');
+    }
 
     // Insert user message immediately (real-time subscription will also pick it up)
     const { data: msgData } = await supabase.from('chat_messages').insert({
       chat_log_id: convoId,
       sender_type: 'admin',
       sender_id: user?.id || '',
-      message_type: 'text',
+      message_type: pendingFile ? 'file' : 'text',
       content,
+      attachment_url: uploaded ? uploaded.url : null,
+      attachment_type: uploaded ? uploaded.type : null,
     }).select().maybeSingle();
 
     if (msgData) {
@@ -339,6 +368,11 @@ export default function FloatingChatbox() {
         is_full_pledge: role?.is_full_pledge || false,
       },
       message: content,
+      // The workflow downloads this and hands it to Gemini vision, so a pasted
+      // screenshot can be asked about rather than merely stored.
+      image_url: uploaded && isImageAttachment(uploaded.type) ? uploaded.url : null,
+      attachment_url: uploaded ? uploaded.url : null,
+      attachment_type: uploaded ? uploaded.type : null,
       timestamp: new Date().toISOString(),
       source: 'floating_chatbox',
     };
@@ -631,6 +665,17 @@ export default function FloatingChatbox() {
                                 ) : (
                                   msg.content
                                 )}
+                                {msg.attachment_url && (
+                                  isImageAttachment(msg.attachment_type) ? (
+                                    <a href={msg.attachment_url} target="_blank" rel="noopener noreferrer" className="block mt-1.5">
+                                      <img src={msg.attachment_url} alt={msg.content || 'Attached image'} className="max-w-full max-h-40 rounded-lg border border-white/10" />
+                                    </a>
+                                  ) : (
+                                    <a href={msg.attachment_url} target="_blank" rel="noopener noreferrer" className="block mt-1.5 text-blue-300 underline text-[11px]">
+                                      {msg.attachment_type || 'Attachment'}
+                                    </a>
+                                  )
+                                )}
                               </div>
                               <div className={`flex items-center gap-1 ${msg.sender_type === 'admin' ? 'flex-row-reverse' : ''}`}>
                                 <span className="text-slate-600 text-[10px]">{formatMessageTime(msg.created_at)}</span>
@@ -684,18 +729,58 @@ export default function FloatingChatbox() {
                   </div>
 
                   {/* Input */}
-                  <form onSubmit={handleSend} className="p-3 border-t border-white/5 flex gap-2">
-                    <input
-                      value={input}
-                      onChange={(e) => setInput(e.target.value)}
-                      placeholder={!canCreate ? 'No send permission' : activeWebhook ? 'Write a message...' : 'No webhook connected'}
-                      disabled={!activeWebhook}
-                      className="flex-1 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30 text-xs disabled:opacity-50"
-                      onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-                    />
-                    <button type="submit" disabled={!input.trim() || !activeConversation || !activeWebhook} className="p-2 bg-gradient-to-r from-blue-500 to-emerald-500 text-white rounded-xl disabled:opacity-50 transition-all hover:from-blue-600 hover:to-emerald-600 flex-shrink-0">
-                      <Send className="w-3.5 h-3.5" />
-                    </button>
+                  <form onSubmit={handleSend} className="p-3 border-t border-white/5 flex flex-col gap-2">
+                    {attachment && (
+                      <div className="flex items-center gap-2 p-1.5 bg-white/5 rounded-lg">
+                        {attachmentPreview ? (
+                          <img src={attachmentPreview} alt={attachment.name} className="w-8 h-8 object-cover rounded border border-white/10 flex-shrink-0" />
+                        ) : (
+                          <Paperclip className="w-3.5 h-3.5 text-blue-400 flex-shrink-0" />
+                        )}
+                        <span className="text-slate-300 text-[11px] flex-1 truncate">{attachment.name}</span>
+                        {uploading && <Loader2 className="w-3.5 h-3.5 text-slate-400 animate-spin flex-shrink-0" aria-label="Uploading" />}
+                        <button type="button" onClick={() => setAttachment(null)} className="text-slate-400 hover:text-white flex-shrink-0" aria-label="Remove attachment">
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
+                    {attachError && <p className="text-[11px] text-amber-300">{attachError}</p>}
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => attachInputRef.current?.click()}
+                        disabled={!activeWebhook}
+                        title="Attach an image"
+                        className="p-2 text-slate-400 hover:text-white bg-white/5 hover:bg-white/10 rounded-xl transition-all flex-shrink-0 disabled:opacity-50"
+                      >
+                        <Paperclip className="w-3.5 h-3.5" />
+                      </button>
+                      <input
+                        ref={attachInputRef}
+                        type="file"
+                        accept="image/*,application/pdf"
+                        className="hidden"
+                        onChange={(e) => { setAttachment(e.target.files?.[0] || null); setAttachError(null); }}
+                      />
+                      <input
+                        value={input}
+                        onChange={(e) => setInput(e.target.value)}
+                        placeholder={!canCreate ? 'No send permission' : activeWebhook ? 'Write a message, or paste a screenshot...' : 'No webhook connected'}
+                        disabled={!activeWebhook}
+                        className="flex-1 min-w-0 bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30 text-xs disabled:opacity-50"
+                        onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+                        onPaste={(e) => {
+                          const pastedImage = imageFromClipboard(e);
+                          if (!pastedImage) return; // ordinary text paste, leave it alone
+                          e.preventDefault();
+                          setAttachment(pastedImage);
+                          setAttachError(null);
+                        }}
+                      />
+                      <button type="submit" disabled={(!input.trim() && !attachment) || !activeConversation || !activeWebhook} className="p-2 bg-gradient-to-r from-blue-500 to-emerald-500 text-white rounded-xl disabled:opacity-50 transition-all hover:from-blue-600 hover:to-emerald-600 flex-shrink-0">
+                        <Send className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </form>
                 </div>
               )}
