@@ -97,10 +97,14 @@ export default function ChatbotPage() {
   // every scrollable ancestor including the window, so a new message dragged
   // the whole page down instead of just the conversation.
   // botTyping is included so the indicator is visible the moment it appears.
+  // attachment and attachError are dependencies because they change the height
+  // of the composer. Pasting a screenshot while the assistant is replying grows
+  // the composer, shrinks the transcript, and pushes the typing indicator below
+  // the fold - the scroll has to run again once the layout has settled.
   useEffect(() => {
     const list = messageListRef.current;
     if (list) list.scrollTo({ top: list.scrollHeight, behavior: 'smooth' });
-  }, [messages, botTyping]);
+  }, [messages, botTyping, attachment, attachError]);
 
   // Real-time subscription for messages in the selected conversation
   useEffect(() => {

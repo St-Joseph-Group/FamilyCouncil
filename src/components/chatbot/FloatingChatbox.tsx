@@ -128,10 +128,14 @@ export default function FloatingChatbox() {
   // botTyping included so the indicator scrolls into view when it appears.
   // Scroll the transcript, not its ancestors: scrollIntoView would scroll the
   // page behind this floating widget every time a message arrived.
+  // attachment and attachError are dependencies because they change the height
+  // of the composer. Pasting a screenshot while the assistant is replying grows
+  // the composer, shrinks the transcript, and pushes the typing indicator below
+  // the fold - the scroll has to run again once the layout has settled.
   useEffect(() => {
     const list = messageListRef.current;
     if (list) list.scrollTo({ top: list.scrollHeight, behavior: 'smooth' });
-  }, [messages, botTyping]);
+  }, [messages, botTyping, attachment, attachError]);
   useEffect(() => { loadActiveWebhook(); }, []);
 
   // Real-time subscription for messages in the active conversation
