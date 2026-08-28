@@ -244,3 +244,50 @@ button, a {
   height: 100vh;
   height: 100dvh;
 }
+
+/* ---------------------------------------------------------------------------
+   Bot replies carry HTML tables built by the n8n workflow. `width: 100%` above
+   is only a suggestion: without a fixed layout the browser sizes columns to
+   their content, so in the floating chatbox - where the bubble is about 280px
+   wide - a two column table pushed past the edge and the transcript scrolled
+   sideways. Fixed layout makes the columns share the width that is actually
+   there, and the cells wrap instead of forcing the row wider.
+--------------------------------------------------------------------------- */
+.bot-message-content {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.bot-message-content table {
+  table-layout: fixed;
+  max-width: 100%;
+}
+
+.bot-message-content th,
+.bot-message-content td {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Images and preformatted blocks are the other two things that will not shrink
+   on their own. */
+.bot-message-content img {
+  max-width: 100%;
+  height: auto;
+}
+
+.bot-message-content pre {
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The workflow writes `padding:4px 10px` inline on every cell, and an inline
+   style beats a stylesheet rule, so this needs !important to claw back the
+   horizontal space. Scoped to the floating widget: the full Chatbot page has
+   room and keeps the roomier padding. */
+.floating-chat .bot-message-content th,
+.floating-chat .bot-message-content td {
+  padding: 3px 5px !important;
+  font-size: 0.95em;
+}

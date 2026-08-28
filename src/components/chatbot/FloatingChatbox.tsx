@@ -470,7 +470,7 @@ export default function FloatingChatbox() {
 
       {/* Chat Panel */}
       {open && (
-        <div className={`fixed bottom-6 right-6 z-50 bg-slate-900 border border-white/10 rounded-2xl shadow-2xl shadow-black/50 flex flex-col transition-all duration-300 ${minimized ? (activeConversation ? 'w-80' : 'w-80 h-14') : 'w-96 h-[520px]'}`}>
+        <div className={`floating-chat fixed bottom-6 right-6 z-50 bg-slate-900 border border-white/10 rounded-2xl shadow-2xl shadow-black/50 flex flex-col transition-all duration-300 ${minimized ? (activeConversation ? 'w-80' : 'w-80 h-14') : 'w-96 h-[520px]'}`}>
           {/* Header */}
           <div className="flex items-center gap-3 px-4 py-3 border-b border-white/5 flex-shrink-0">
             <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-emerald-500 rounded-full flex items-center justify-center flex-shrink-0">
@@ -614,7 +614,7 @@ export default function FloatingChatbox() {
                   </div>
 
                   {/* Messages */}
-                  <div ref={messageListRef} className="flex-1 overflow-y-auto p-3 space-y-2.5">
+                  <div ref={messageListRef} className="flex-1 overflow-y-auto overflow-x-hidden p-3 space-y-2.5">
                     {!activeWebhook && (
                       <div className="flex items-center gap-2 p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl">
                         <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
@@ -656,7 +656,7 @@ export default function FloatingChatbox() {
                                 <Bot className="w-3 h-3 text-slate-300" />
                               )}
                             </div>
-                            <div className={`flex flex-col gap-0.5 max-w-[75%] ${msg.sender_type === 'admin' ? 'items-end' : 'items-start'}`}>
+                            <div className={`flex flex-col gap-0.5 max-w-[75%] min-w-0 ${msg.sender_type === 'admin' ? 'items-end' : 'items-start'}`}>
                               <div className={`px-3 py-2 rounded-xl text-xs leading-relaxed ${
                                 msg.sender_type === 'admin'
                                   ? 'bg-blue-600 text-white rounded-tr-sm'
