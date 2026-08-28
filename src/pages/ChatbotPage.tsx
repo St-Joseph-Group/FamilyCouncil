@@ -7,6 +7,7 @@ import { logAuditEvent } from '../lib/audit';
 import { imageFromClipboard, uploadChatAttachment, isImageAttachment, UploadedAttachment } from '../lib/chatAttachments';
 import ConfirmModal from '../components/ConfirmModal';
 import AccessRequestModal from '../components/AccessRequestModal';
+import ImageLightbox from '../components/chatbot/ImageLightbox';
 
 
 const RESPONSE_FIELD_CANDIDATES = ['reply', 'message', 'text', 'response', 'content', 'output', 'answer'];
@@ -56,6 +57,7 @@ export default function ChatbotPage() {
   const [attachment, setAttachment] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [attachError, setAttachError] = useState<string | null>(null);
+  const [lightbox, setLightbox] = useState<string | null>(null);
 
   // Local preview for a pending image. Revoked on change so a long session of
   // pasted screenshots does not leak object URLs.
@@ -92,6 +94,16 @@ export default function ChatbotPage() {
   const [bulkDeleting, setBulkDeleting] = useState(false);
 
   useEffect(() => { loadActiveWebhook(); fetchChatLogs(); }, []);
+
+  // This page is sized to fill the viewport exactly: the session list and the
+  // transcript scroll, the document never should. Locking it means a stray
+  // pixel from a tall attachment or a browser info bar cannot turn into a page
+  // scrollbar that drags the whole layout while a reply is being waited on.
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, []);
   useEffect(() => { if (selectedLog) fetchMessages(selectedLog.id); }, [selectedLog]);
   // Scroll the transcript itself. scrollIntoView walks up the tree and scrolls
   // every scrollable ancestor including the window, so a new message dragged
@@ -689,9 +701,14 @@ export default function ChatbotPage() {
                           )}
                           {msg.attachment_url && (
                             isImageAttachment(msg.attachment_type) ? (
-                              <a href={msg.attachment_url} target="_blank" rel="noopener noreferrer" className="block mt-2">
+                              <button
+                                type="button"
+                                onClick={() => setLightbox(msg.attachment_url)}
+                                className="block mt-2 cursor-zoom-in"
+                                aria-label="View image larger"
+                              >
                                 <img src={msg.attachment_url} alt={msg.content || 'Attached image'} className="max-w-full max-h-64 rounded-lg border border-white/10" />
-                              </a>
+                              </button>
                             ) : (
                               <a href={msg.attachment_url} target="_blank" rel="noopener noreferrer" className="block mt-2 text-blue-300 underline text-xs">
                                 {msg.attachment_type || 'Attachment'}
@@ -834,6 +851,8 @@ export default function ChatbotPage() {
         action={accessRequest?.action || ''}
         onClose={() => setAccessRequest(null)}
       />
+
+      <ImageLightbox src={lightbox} onClose={() => setLightbox(null)} />
     </div>
   );
 }

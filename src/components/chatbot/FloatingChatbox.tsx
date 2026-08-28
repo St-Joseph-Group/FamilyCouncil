@@ -7,6 +7,7 @@ import { logAuditEvent } from '../../lib/audit';
 import { imageFromClipboard, uploadChatAttachment, isImageAttachment, UploadedAttachment } from '../../lib/chatAttachments';
 import ConfirmModal from '../ConfirmModal';
 import AccessRequestModal from '../AccessRequestModal';
+import ImageLightbox from './ImageLightbox';
 
 
 const RESPONSE_FIELD_CANDIDATES = ['reply', 'message', 'text', 'response', 'content', 'output', 'answer'];
@@ -93,6 +94,7 @@ export default function FloatingChatbox() {
   const [attachment, setAttachment] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [attachError, setAttachError] = useState<string | null>(null);
+  const [lightbox, setLightbox] = useState<string | null>(null);
   const attachInputRef = useRef<HTMLInputElement>(null);
 
   // Local preview for a pending image, revoked on change so a long session of
@@ -671,9 +673,14 @@ export default function FloatingChatbox() {
                                 )}
                                 {msg.attachment_url && (
                                   isImageAttachment(msg.attachment_type) ? (
-                                    <a href={msg.attachment_url} target="_blank" rel="noopener noreferrer" className="block mt-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => setLightbox(msg.attachment_url)}
+                                      className="block mt-1.5 cursor-zoom-in"
+                                      aria-label="View image larger"
+                                    >
                                       <img src={msg.attachment_url} alt={msg.content || 'Attached image'} className="max-w-full max-h-40 rounded-lg border border-white/10" />
-                                    </a>
+                                    </button>
                                   ) : (
                                     <a href={msg.attachment_url} target="_blank" rel="noopener noreferrer" className="block mt-1.5 text-blue-300 underline text-[11px]">
                                       {msg.attachment_type || 'Attachment'}
@@ -822,6 +829,8 @@ export default function FloatingChatbox() {
         action={accessRequest?.action || ''}
         onClose={() => setAccessRequest(null)}
       />
+
+      <ImageLightbox src={lightbox} onClose={() => setLightbox(null)} />
     </>
   );
 }
