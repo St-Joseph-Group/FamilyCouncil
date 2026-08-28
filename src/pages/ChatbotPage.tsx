@@ -4,6 +4,7 @@ import { supabase, ChatLog, ChatMessage } from '../lib/supabase';
 import { postToWebhookProxy, fetchActiveWebhook } from '../lib/webhookProxy';
 import { useAuth } from '../contexts/AuthContext';
 import { logAuditEvent } from '../lib/audit';
+import { imageFromClipboard, uploadChatAttachment, isImageAttachment, UploadedAttachment } from '../lib/chatAttachments';
 import ConfirmModal from '../components/ConfirmModal';
 import AccessRequestModal from '../components/AccessRequestModal';
 
@@ -53,6 +54,19 @@ export default function ChatbotPage() {
   const [msgLoading, setMsgLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [attachment, setAttachment] = useState<File | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [attachError, setAttachError] = useState<string | null>(null);
+
+  // Local preview for a pending image. Revoked on change so a long session of
+  // pasted screenshots does not leak object URLs.
+  const attachmentPreview = React.useMemo(
+    () => (attachment && attachment.type.startsWith('image/') ? URL.createObjectURL(attachment) : null),
+    [attachment],
+  );
+  React.useEffect(
+    () => () => { if (attachmentPreview) URL.revokeObjectURL(attachmentPreview); },
+    [attachmentPreview],
+  );
   const [activeWebhook, setActiveWebhook] = useState<ActiveWebhook | null>(null);
   const [webhookError, setWebhookError] = useState<string | null>(null);
   // Shown as a typing bubble while the assistant is composing a reply.
@@ -319,9 +333,20 @@ export default function ChatbotPage() {
     const content = message.trim() || (attachment ? attachment.name : '');
     const logId = selectedLog.id;
     const sessionId = selectedLog.session_id;
-    const isFile = !!attachment;
+    const pendingFile = attachment;
+    const isFile = !!pendingFile;
     setMessage('');
     setAttachment(null);
+
+    // Upload before inserting so the row carries its attachment from the start.
+    // Inserting first and patching afterwards would flash an empty bubble.
+    let uploaded: UploadedAttachment | null = null;
+    if (pendingFile) {
+      setUploading(true);
+      uploaded = await uploadChatAttachment(pendingFile, logId);
+      setUploading(false);
+      if (!uploaded) setAttachError('That file could not be uploaded, so the message was sent without it.');
+    }
 
     // Insert user message immediately
     const { data: msgData } = await supabase.from('chat_messages').insert({
@@ -330,6 +355,8 @@ export default function ChatbotPage() {
       sender_id: user?.id || '',
       message_type: isFile ? 'file' : 'text',
       content,
+      attachment_url: uploaded ? uploaded.url : null,
+      attachment_type: uploaded ? uploaded.type : null,
     }).select().maybeSingle();
 
     if (msgData) {
@@ -349,6 +376,11 @@ export default function ChatbotPage() {
         is_full_pledge: role?.is_full_pledge || false,
       },
       message: content,
+      // The workflow downloads this and hands it to Gemini vision, so a pasted
+      // screenshot can be asked about rather than merely stored.
+      image_url: uploaded && isImageAttachment(uploaded.type) ? uploaded.url : null,
+      attachment_url: uploaded ? uploaded.url : null,
+      attachment_type: uploaded ? uploaded.type : null,
       timestamp: new Date().toISOString(),
       platform: 'family_council_system',
     };
@@ -652,9 +684,15 @@ export default function ChatbotPage() {
                             msg.content
                           )}
                           {msg.attachment_url && (
-                            <a href={msg.attachment_url} target="_blank" rel="noopener noreferrer" className="block mt-2 text-blue-300 underline text-xs">
-                              {msg.attachment_type || 'Attachment'}
-                            </a>
+                            isImageAttachment(msg.attachment_type) ? (
+                              <a href={msg.attachment_url} target="_blank" rel="noopener noreferrer" className="block mt-2">
+                                <img src={msg.attachment_url} alt={msg.content || 'Attached image'} className="max-w-full max-h-64 rounded-lg border border-white/10" />
+                              </a>
+                            ) : (
+                              <a href={msg.attachment_url} target="_blank" rel="noopener noreferrer" className="block mt-2 text-blue-300 underline text-xs">
+                                {msg.attachment_type || 'Attachment'}
+                              </a>
+                            )
                           )}
                         </div>
                         <div className={`flex items-center gap-2 ${msg.sender_type === 'admin' ? 'flex-row-reverse' : 'flex-row'}`}>
@@ -703,13 +741,21 @@ export default function ChatbotPage() {
 
             <form onSubmit={sendMessage} className="p-4 border-t border-white/5">
               {attachment && (
-                <div className="flex items-center gap-2 mb-3 p-2 bg-white/5 rounded-xl">
-                  <Paperclip className="w-4 h-4 text-blue-400" />
+                <div className="flex items-center gap-3 mb-3 p-2 bg-white/5 rounded-xl">
+                  {attachmentPreview ? (
+                    <img src={attachmentPreview} alt={attachment.name} className="w-12 h-12 object-cover rounded-lg border border-white/10 flex-shrink-0" />
+                  ) : (
+                    <Paperclip className="w-4 h-4 text-blue-400 flex-shrink-0" />
+                  )}
                   <span className="text-slate-300 text-sm flex-1 truncate">{attachment.name}</span>
-                  <button type="button" onClick={() => setAttachment(null)} className="text-slate-400 hover:text-white">
+                  {uploading && <Loader2 className="w-4 h-4 text-slate-400 animate-spin flex-shrink-0" aria-label="Uploading" />}
+                  <button type="button" onClick={() => setAttachment(null)} className="text-slate-400 hover:text-white flex-shrink-0">
                     <X className="w-4 h-4" />
                   </button>
                 </div>
+              )}
+              {attachError && (
+                <p className="mb-3 text-xs text-amber-300">{attachError}</p>
               )}
               <div className="flex gap-2">
                 <button type="button" onClick={() => fileInputRef.current?.click()} className="p-2.5 text-slate-400 hover:text-white bg-white/5 hover:bg-white/10 rounded-xl transition-all flex-shrink-0">
@@ -719,7 +765,14 @@ export default function ChatbotPage() {
                 <input
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
-                  placeholder={activeWebhook ? 'Type a message...' : 'Connect a webhook first...'}
+                  placeholder={activeWebhook ? 'Type a message, or paste a screenshot...' : 'Connect a webhook first...'}
+                  onPaste={(e) => {
+                    const pastedImage = imageFromClipboard(e);
+                    if (!pastedImage) return; // ordinary text paste, leave it alone
+                    e.preventDefault();
+                    setAttachment(pastedImage);
+                    setAttachError(null);
+                  }}
                   disabled={!activeWebhook}
                   className="flex-1 bg-white/5 border border-white/10 rounded-xl px-4 py-2.5 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/30 text-sm disabled:opacity-50"
                   onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }}
