@@ -56,7 +56,11 @@ export default function ChatbotPage() {
   const [activeWebhook, setActiveWebhook] = useState<ActiveWebhook | null>(null);
   const [webhookError, setWebhookError] = useState<string | null>(null);
   // Shown as a typing bubble while the assistant is composing a reply.
-  const [botTyping, setBotTyping] = useState(false);
+  // Keyed by chat log id rather than a single flag: the indicator belongs to
+  // the conversation that is actually waiting, so switching sessions must not
+  // carry it across, and two conversations can be waiting at the same time.
+  const [typingLogIds, setTypingLogIds] = useState<Set<string>>(new Set());
+  const botTyping = selectedLog ? typingLogIds.has(selectedLog.id) : false;
   const [accessRequest, setAccessRequest] = useState<{ module: string; action: string } | null>(null);
 
   const canCreate = isSuperAdmin() || hasPermission('chatbot', 'create');
@@ -350,7 +354,7 @@ export default function ChatbotPage() {
     };
 
     // Fire webhook asynchronously - do not block input
-    setBotTyping(true);
+    setTypingLogIds((prev) => new Set(prev).add(logId));
     (async () => {
       const start = Date.now();
       try {
@@ -421,7 +425,11 @@ export default function ChatbotPage() {
         // finally, not the success path: a failed, timed-out, or rejected
         // webhook must not leave the indicator running forever. The catch block
         // above awaits its own writes, which can themselves throw.
-        setBotTyping(false);
+        setTypingLogIds((prev) => {
+          const next = new Set(prev);
+          next.delete(logId);
+          return next;
+        });
       }
 
       await logAuditEvent(user?.id || null, 'send_message', 'chatbot', logId, 'chat_log', { content: content.slice(0, 100) });

@@ -94,7 +94,11 @@ export default function FloatingChatbox() {
   const [unreadCount, setUnreadCount] = useState(0);
   const [activeWebhook, setActiveWebhook] = useState<ActiveWebhook | null>(null);
   // Shown as a typing bubble while the assistant is composing a reply.
-  const [botTyping, setBotTyping] = useState(false);
+  // Keyed by conversation id rather than a single flag: the indicator belongs
+  // to the conversation that is actually waiting, so switching conversations
+  // must not carry it across.
+  const [typingConvoIds, setTypingConvoIds] = useState<Set<string>>(new Set());
+  const botTyping = activeConversation ? typingConvoIds.has(activeConversation.id) : false;
   const [confirmDeleteMsg, setConfirmDeleteMsg] = useState<ChatMessage | null>(null);
   const [confirmDeleteConvo, setConfirmDeleteConvo] = useState<string | null>(null);
   const messageListRef = useRef<HTMLDivElement>(null);
@@ -340,7 +344,7 @@ export default function FloatingChatbox() {
     };
 
     // Non-blocking webhook call
-    setBotTyping(true);
+    setTypingConvoIds((prev) => new Set(prev).add(convoId));
     (async () => {
       try {
         const res = await postToWebhookProxy(activeWebhook.id, payload, 60000, 120000);
@@ -398,7 +402,11 @@ export default function FloatingChatbox() {
       } finally {
         // finally, so a failed or timed-out webhook cannot leave the indicator
         // running forever. The catch block above awaits its own write.
-        setBotTyping(false);
+        setTypingConvoIds((prev) => {
+          const next = new Set(prev);
+          next.delete(convoId);
+          return next;
+        });
       }
     })();
   }
