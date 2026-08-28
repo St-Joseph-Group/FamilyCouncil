@@ -1,0 +1,41 @@
+{
+  "_comment": "Structural snapshot taken by hand on 2026-08-28. Node bodies are not here - run n8n/export-workflows.mjs for those.",
+  "workflowId": "dlx6qE4bQxWEzVtw",
+  "name": "Family Council v2 - KB Ingestion (Google Drive)",
+  "active": true,
+  "nodeCount": 14,
+  "snapshotTaken": "2026-08-28",
+  "settings": {
+    "executionTimeout": 300
+  },
+  "nodes": [
+    { "name": "Refresh Every 15 Minutes", "type": "n8n-nodes-base.scheduleTrigger" },
+    { "name": "Run KB Ingestion", "type": "n8n-nodes-base.manualTrigger" },
+    { "name": "KB Config", "type": "n8n-nodes-base.set", "critical": "Holds the KB Drive root folder id." },
+    { "name": "Ensure KB Schema", "type": "n8n-nodes-base.postgres", "critical": "Creates fc_kb_vectors, fc_kb_queue, fc_kb_images, fc_kb_notify_state." },
+    { "name": "Init Crawl", "type": "n8n-nodes-base.code" },
+    { "name": "Crawl Next Level", "type": "n8n-nodes-base.code", "critical": "splice(0, 1) - ONE folder per Drive query. Batching 5+ makes Drive return an EMPTY list with no error; subfolders were invisible for a month in 2026. Never raise this." },
+    { "name": "List Folder Children", "type": "n8n-nodes-base.googleDrive", "critical": "authentication MUST be oAuth2. Set to serviceAccount it silently returns 0 files, because the service account has no access to the personal Drive holding the KB." },
+    { "name": "Absorb Level", "type": "n8n-nodes-base.code", "critical": "Pushes every discovered subfolder back onto pendingFolders. This is what makes the crawl recurse to ALL depths." },
+    { "name": "More Folders To Crawl?", "type": "n8n-nodes-base.if", "critical": "Loops back to Crawl Next Level until no folders remain." },
+    { "name": "Prepare Queue Payload", "type": "n8n-nodes-base.code" },
+    { "name": "Upsert Queue", "type": "n8n-nodes-base.postgres", "critical": "Re-queues on modified_time OR parent_folder change - a Drive move does not touch modifiedTime but can change the access tag." },
+    { "name": "Reconcile Deletions", "type": "n8n-nodes-base.postgres", "critical": "Safety gate: does nothing if the crawl returned zero files, or if more than 10% (min 20) would be removed. Without it, one broken crawl erases the knowledge base." },
+    { "name": "Crawl Summary", "type": "n8n-nodes-base.set" },
+    { "name": "Sticky Note 05eed7b9", "type": "n8n-nodes-base.stickyNote" }
+  ],
+  "connections": {
+    "Refresh Every 15 Minutes": ["KB Config"],
+    "Run KB Ingestion": ["KB Config"],
+    "KB Config": ["Ensure KB Schema"],
+    "Ensure KB Schema": ["Init Crawl"],
+    "Init Crawl": ["Crawl Next Level"],
+    "Crawl Next Level": ["List Folder Children"],
+    "List Folder Children": ["Absorb Level"],
+    "Absorb Level": ["More Folders To Crawl?"],
+    "More Folders To Crawl?": { "true": ["Crawl Next Level"], "false": ["Prepare Queue Payload"] },
+    "Prepare Queue Payload": ["Upsert Queue"],
+    "Upsert Queue": ["Reconcile Deletions"],
+    "Reconcile Deletions": ["Crawl Summary"]
+  }
+}

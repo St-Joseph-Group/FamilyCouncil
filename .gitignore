@@ -36,3 +36,8 @@ ios/App/App/public/
 ios/App/Pods/
 ios/App/output/
 ios/App/build/
+
+# n8n API key must never be committed. The export script reads it from the
+# environment; keep any local helper script out of git.
+n8n/.env
+n8n/*.local.*
