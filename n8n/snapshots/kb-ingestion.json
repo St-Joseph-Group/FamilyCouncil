@@ -6,7 +6,12 @@
   "nodeCount": 14,
   "snapshotTaken": "2026-08-28",
   "settings": {
-    "executionTimeout": 300
+    "executionTimeout": 300,
+    "_comment": "Execution data is NOT retained on success. n8n stores its own state in SQLite on an Azure Files SMB share, which corrupted on 2026-08-28 and took the chatbot offline. Every saved run is a write to that file. Failed runs are still saved in full - those are the ones worth keeping.",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false
   },
   "nodes": [
     { "name": "Refresh Every 15 Minutes", "type": "n8n-nodes-base.scheduleTrigger" },

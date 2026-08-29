@@ -5,6 +5,13 @@
   "active": true,
   "nodeCount": 29,
   "snapshotTaken": "2026-08-28",
+  "settings": {
+    "_comment": "Execution data is NOT retained on success. n8n stores its own state in SQLite on an Azure Files SMB share, which corrupted on 2026-08-28 and took the chatbot offline. Every saved run is a write to that file. Failed runs are still saved in full - those are the ones worth keeping.",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false
+  },
   "nodes": [
     { "name": "Webhook for Family Council", "type": "n8n-nodes-base.webhook" },
     { "name": "Prepare Input", "type": "n8n-nodes-base.set", "critical": "Must assign 5 fields: user_message, userId, sessionId, is_full_pledge, image_url. image_url was silently dropped on 2026-08-28, which broke image reading." },

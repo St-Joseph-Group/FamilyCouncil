@@ -92,3 +92,51 @@ it takes the chatbot down, not just ingestion.
 document contents. A path containing "full pledge" (case-insensitive, with `-`
 and `_` treated as spaces) makes everything inside restricted. Subfolders
 inherit. Moving a file between folders re-queues it so its tag is recomputed.
+
+## The database n8n keeps its own state in
+
+n8n's workflows, credentials and execution history live in SQLite, in a single
+file on the App Service's `/home` mount. That mount is Azure Files — an SMB
+network share — and SQLite's locking assumes a local disk. On **2026-08-28**
+that file corrupted. Webhooks began returning HTTP 500 in 0.13s before any node
+ran, so the chatbot went silent while the scheduled workflows, which only touch
+Supabase, carried on as if nothing were wrong.
+
+Everything was recovered: the file could still be read, so all 31 workflows came
+out through `sqlite3 -readonly`.
+
+The permanent fix is to move this store to Postgres. Until that happens, the
+same failure can recur, and these settings exist to make it less likely and less
+expensive:
+
+**Successful executions are not retained.** Every saved run is a write to the
+file, and the chat workflow stored a full copy of each answer — 60,000-character
+retrieval contexts, embeddings, attached images. `saveDataSuccessExecution` is
+`none` on the chat and ingestion workflows; `saveDataErrorExecution` stays `all`,
+because failures are the runs worth reading. Set per workflow rather than
+globally so a future workflow does not inherit it silently.
+
+Worth pairing with, on the App Service:
+
+| Variable | Value | Why |
+|---|---|---|
+| `EXECUTIONS_DATA_PRUNE` | `true` | Deletes old execution rows at all |
+| `EXECUTIONS_DATA_MAX_AGE` | `168` | Keep one week |
+| `EXECUTIONS_DATA_PRUNE_MAX_COUNT` | `5000` | Ceiling regardless of age |
+| `N8N_BINARY_DATA_MODE` | `filesystem` | Keeps PDFs and page images out of the database entirely |
+
+Pruning stops the file growing but does not shrink it — freed pages are reused,
+not returned. Reclaiming space needs a `VACUUM`, which rewrites the whole file
+and is therefore the single operation most likely to corrupt it again. Take a
+backup first, do it in a quiet window, and remove the variable afterwards so it
+does not run on every restart.
+
+**Backups.** Copying the file while n8n is running can capture a torn write. Use
+SQLite's own atomic backup instead:
+
+```bash
+sqlite3 /home/.n8n/database.sqlite ".backup '/home/backups/n8n-$(date +%F).db'"
+```
+
+The workflow JSON in `workflows/` is a second, independent copy of the part that
+actually matters — and the one that recovered the outage.

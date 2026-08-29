@@ -7,7 +7,12 @@
   "snapshotTaken": "2026-08-28",
   "settings": {
     "executionTimeout": 3600,
-    "errorWorkflow": "8MeUG6bYrnPrmZLv"
+    "errorWorkflow": "8MeUG6bYrnPrmZLv",
+    "_comment": "Execution data is NOT retained on success. n8n stores its own state in SQLite on an Azure Files SMB share, which corrupted on 2026-08-28 and took the chatbot offline. This workflow is the heaviest writer when the queue is not empty - it carries downloaded PDFs, page images and OCR text through 48 nodes. Failed runs are still saved in full, and errorWorkflow is unaffected, so fc_kb_errors logging is unchanged. If ingestion ever stalls with files stuck short of 'done', suspect this first: Wait For Quota Window defers for 65 seconds, and a deferred run has to survive on persisted state.",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false
   },
   "nodes": [
     { "name": "Every 15 Minutes", "type": "n8n-nodes-base.scheduleTrigger", "critical": "15 minutes, ONE file per run. Raising this reproduces the Vertex 429 storm, which also takes the chatbot down." },
