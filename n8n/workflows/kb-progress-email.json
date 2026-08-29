@@ -1,0 +1,204 @@
+{
+  "name": "Family Council v2 - KB Progress Email",
+  "nodes": [
+    {
+      "id": "b9cc96c6-eaa4-4e36-8772-e7a8eb1b262f",
+      "name": "Every 8 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 8
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "9cd282bc-3115-4cec-9c62-a2e04f391e93",
+      "name": "Read Progress",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        224,
+        96
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Ingestion progress, plus the decision about whether to email at all.\n-- fc_kb_notify_state is a single-row latch. While work remains we send updates\n-- and keep the latch clear. When the queue drains we send ONE final email and\n-- latch, so this workflow goes quiet instead of repeating \"100%\" every 5 hours\n-- until somebody remembers to switch it off. Queue new files later and the\n-- latch clears by itself, so reporting resumes.\n-- The ETA assumes the throttled rate of one file per 15 minutes; that rate\n-- exists because a faster one exhausted the Vertex embedding quota and took\n-- the chatbot down with it.\nWITH cur AS (\n  SELECT count(*) FILTER (WHERE status='done')       AS done,\n         count(*) FILTER (WHERE status='pending')    AS pending,\n         count(*) FILTER (WHERE status='processing') AS processing,\n         count(*) FILTER (WHERE status='skipped')    AS skipped,\n         count(*)                                    AS total\n  FROM fc_kb_queue\n),\nprev AS (SELECT idle FROM fc_kb_notify_state WHERE id),\n-- Clear the latch as soon as there is work again. Deliberately does NOT set it\n-- here: that happens in \"Mark Reported\", only after the email actually sends.\nreset AS (\n  UPDATE fc_kb_notify_state\n  SET idle = false, updated_at = now()\n  WHERE id AND (SELECT (pending + processing) > 0 FROM cur)\n  RETURNING 1\n)\nSELECT c.done, c.pending, c.processing, c.skipped, c.total,\n  round(100.0 * c.done / nullif(c.total,0), 1)                       AS pct_done,\n  (SELECT count(*) FROM fc_kb_vectors)                               AS chunks,\n  (SELECT count(DISTINCT metadata->>'fileId') FROM fc_kb_vectors)    AS files_embedded,\n  to_char(now() + ((c.pending + c.processing) * interval '15 minutes'),\n          'Mon DD HH24:MI') || ' UTC'                                AS eta,\n  (c.pending + c.processing) = 0                                     AS is_complete,\n  ((c.pending + c.processing) = 0 AND NOT p.idle)                    AS is_final,\n  ((c.pending + c.processing) > 0 OR NOT p.idle)                     AS should_send\nFROM cur c, prev p;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    },
+    {
+      "id": "d2413d93-7f39-4c09-bc35-3648fd7e4b0f",
+      "name": "Send Progress Email",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        448,
+        96
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "toRecipients": "johndel.camero@stjoseph-group.com",
+        "subject": "={{ $json.is_final ? '✅ Family Council KB - ingestion complete (' + $json.done + ' files)' : 'Family Council KB - ' + $json.pct_done + '% ingested (' + $json.done + '/' + $json.total + ' files)' }}",
+        "bodyContent": "={{ ($json.is_final ? '<h3>✅ Family Council knowledge base - ingestion complete</h3><p>Every queued file has been embedded. The chatbot now has the full archive, and this is the last of these emails unless new files are added.</p>' : '<h3>Family Council knowledge base - ingestion progress</h3>') + '<table cellpadding=\"6\" style=\"border-collapse:collapse\">' + '<tr><td><b>Embedded</b></td><td>' + $json.done + ' of ' + $json.total + ' files (' + $json.pct_done + '%)</td></tr>' + '<tr><td><b>Remaining</b></td><td>' + $json.pending + ' pending, ' + $json.processing + ' in progress</td></tr>' + '<tr><td><b>Skipped</b></td><td>' + $json.skipped + ' (unsupported file type)</td></tr>' + '<tr><td><b>Search index</b></td><td>' + $json.chunks + ' chunks across ' + $json.files_embedded + ' files</td></tr>' + ($json.is_final ? '' : '<tr><td><b>Estimated finish</b></td><td>' + $json.eta + '</td></tr>') + '</table>' + ($json.is_final ? '<p>Worth doing now: re-test the Full Pledge access rule with a full-pledge and a non-full-pledge account. Ask both about meeting minutes (restricted) and about the Approved Policies folder (public). If the non-full-pledge account can answer the first, the gate is leaking.</p>' : '<p>Rate is one file every 15 minutes (about 4 per hour). That limit is deliberate: a faster rate exhausted the Google Vertex embedding quota, which also broke the chatbot, since it embeds every question through the same API.</p><p>Until this reaches 100%, questions about documents not yet embedded will come back thin or empty. That is missing data, not the Full Pledge access rule.</p>') + '<p style=\"color:#888;font-size:12px\">Sent by the n8n workflow \"Family Council v2 - KB Progress Email\", every 8 hours while work remains. It stops by itself once the queue is empty - no need to switch it off.</p>' }}",
+        "additionalFields": {
+          "bodyContentType": "html",
+          "importance": "Low"
+        }
+      },
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "REDACTED",
+          "name": "Microsoft Outlook account helpdesk"
+        }
+      },
+      "webhookId": "REDACTED"
+    },
+    {
+      "id": "987c25b8-e3c7-449a-a093-6e04d04a5560",
+      "name": "Send Now",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        192
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "33f53d08-324f-4c19-b740-ebe02590ef9e",
+      "name": "Anything To Report?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ss1",
+              "leftValue": "={{ $json.should_send }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "9c97c65b-81e0-43cf-a6a5-cb5d7e8f2414",
+      "name": "Mark Reported",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        880,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Reached only after the email sent. Latches only when the queue is actually\n-- drained, so progress emails keep flowing while work remains. Until this runs\n-- the latch stays clear and the next run retries the send.\nUPDATE fc_kb_notify_state SET idle = true, updated_at = now()\nWHERE id AND $1::boolean;",
+        "options": {
+          "queryReplacement": "={{ [ $('Read Progress').first().json.is_complete ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Send Now": {
+      "main": [
+        [
+          {
+            "node": "Read Progress",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Progress": {
+      "main": [
+        [
+          {
+            "node": "Anything To Report?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything To Report?": {
+      "main": [
+        [
+          {
+            "node": "Send Progress Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Progress Email": {
+      "main": [
+        [
+          {
+            "node": "Mark Reported",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every 8 Hours": {
+      "main": [
+        [
+          {
+            "node": "Read Progress",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true
+  },
+  "pinData": {}
+}

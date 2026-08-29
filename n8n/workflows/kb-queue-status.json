@@ -1,0 +1,155 @@
+{
+  "name": "Family Council v2 - KB Queue Status",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "a3bc5b64-d1d0-4fc5-94a7-e7eb5583b50f",
+      "name": "Check Queue Now",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1408,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  count(*)::int AS total_files,\n  count(*) FILTER (WHERE status = 'done')::int AS done,\n  count(*) FILTER (WHERE status = 'pending')::int AS pending,\n  count(*) FILTER (WHERE status = 'processing')::int AS processing_now,\n  count(*) FILTER (WHERE status = 'skipped')::int AS skipped,\n  round(100.0 * count(*) FILTER (WHERE status IN ('done','skipped')) / GREATEST(count(*), 1), 1)::float AS percent_complete,\n  round((count(*) FILTER (WHERE status = 'pending')) / 3.0 * 5 / 60.0, 1)::float AS est_hours_remaining\nFROM fc_kb_queue;",
+        "options": {}
+      },
+      "id": "ab2d5e40-a90b-4052-996f-0b807735bd3e",
+      "name": "Progress Summary",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -1184,
+        400
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT file_name, parent_folder, to_char(updated_at AT TIME ZONE 'Asia/Manila', 'YYYY-MM-DD HH24:MI') AS finished_at_ph\nFROM fc_kb_queue\nWHERE status = 'done'\nORDER BY updated_at DESC\nLIMIT 10;",
+        "options": {}
+      },
+      "id": "aae34082-9bc8-4d06-836e-621bb7b97076",
+      "name": "Recently Completed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -960,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT file_name, mime_type, parent_folder\nFROM fc_kb_queue\nWHERE status = 'skipped'\nORDER BY file_name;",
+        "options": {}
+      },
+      "id": "ea153cde-a632-4566-97c1-b14ab55aa17d",
+      "name": "Skipped Files",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -736,
+        400
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT file_name, mime_type, parent_folder,\n       to_char(updated_at AT TIME ZONE 'Asia/Manila', 'YYYY-MM-DD HH24:MI') AS last_touched_ph,\n       round(EXTRACT(EPOCH FROM (now() - updated_at)) / 60)::int AS minutes_ago\nFROM fc_kb_queue\nWHERE status = 'processing'\nORDER BY updated_at ASC;",
+        "options": {}
+      },
+      "id": "3614c14e-e8b6-4f0b-931d-d99af23d8362",
+      "name": "Stuck Processing Files",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -528,
+        400
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Check Queue Now": {
+      "main": [
+        [
+          {
+            "node": "Progress Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Progress Summary": {
+      "main": [
+        [
+          {
+            "node": "Recently Completed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recently Completed": {
+      "main": [
+        [
+          {
+            "node": "Skipped Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skipped Files": {
+      "main": [
+        [
+          {
+            "node": "Stuck Processing Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true,
+    "binaryMode": "separate"
+  },
+  "pinData": {}
+}

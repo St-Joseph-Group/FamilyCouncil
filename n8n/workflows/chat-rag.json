@@ -1,0 +1,970 @@
+{
+  "name": "Family Council v2 - Chat (RAG)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "REDACTED",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "baf409c5-07bc-4e75-bc1c-83ea339da615",
+      "name": "Webhook for Family Council",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -2208,
+        336
+      ],
+      "webhookId": "REDACTED"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "user_message",
+              "value": "={{ (($json.body && $json.body.message) || $json.message || '').toString().trim() }}",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "userId",
+              "value": "={{ (($json.body && $json.body.sender && $json.body.sender.id) || ($json.sender && $json.sender.id) || 'anonymous').toString() }}",
+              "type": "string"
+            },
+            {
+              "id": "a3",
+              "name": "sessionId",
+              "value": "={{ (($json.body && $json.body.session_id) || $json.session_id || '').toString() }}",
+              "type": "string"
+            },
+            {
+              "id": "a4",
+              "name": "is_full_pledge",
+              "value": "={{ ($json.body && $json.body.sender && $json.body.sender.is_full_pledge) === true }}",
+              "type": "boolean"
+            },
+            {
+              "id": "a5",
+              "name": "image_url",
+              "value": "={{ (($json.body && $json.body.image_url) || $json.image_url || '').toString() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "87a19041-766d-40fa-8fb8-f8b4dbc18657",
+      "name": "Prepare Input",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1984,
+        336
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  $1::text AS \"userId\",\n  $2::text AS \"user_message\",\n  $3::text AS \"sessionId\",\n  COALESCE(\n    json_agg(\n      json_build_object(\n        'message', message,\n        'timestampMs', (EXTRACT(EPOCH FROM created_at) * 1000)::bigint\n      )\n      ORDER BY created_at DESC\n    ) FILTER (WHERE message IS NOT NULL),\n    '[]'::json\n  ) AS \"recentMessages\",\n  COUNT(*)::int AS \"recentCount\",\n  -- Whole-session figures, not the 10 second rate-limit window below. These\n  -- drive the accuracy disclaimer: shown on the first message of a\n  -- conversation, and again once it has gone quiet for a while.\n  (SELECT COUNT(*) FROM n8n_chat_histories_family_council\n     WHERE session_id = $3)::int AS \"sessionMessageCount\",\n  (SELECT (EXTRACT(EPOCH FROM MAX(created_at)) * 1000)::bigint\n     FROM n8n_chat_histories_family_council\n     WHERE session_id = $3) AS \"lastMessageAtMs\"\nFROM n8n_chat_histories_family_council\nWHERE session_id = $3\n  AND created_at >= NOW() - INTERVAL '10 seconds';",
+        "options": {
+          "queryReplacement": "={{ [ $json.userId, $json.user_message, $json.sessionId ] }}"
+        }
+      },
+      "id": "881a0adc-c5bf-4cca-b6e5-78287d98964f",
+      "name": "Postgres Get Recent",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -1760,
+        336
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const row = $json;\nconst message = ((row.user_message || '') + '').trim().toLowerCase();\nconst userId = ((row.userId || 'anonymous') + '').trim();\nconst sessionId = ((row.sessionId || '') + '').trim();\nconst now = Date.now();\nconst rateWindowMs = 10 * 1000;\nconst maxMessages = 5;\n\nlet recentMessages = row.recentMessages || [];\nif (typeof recentMessages === 'string') {\n  try { recentMessages = JSON.parse(recentMessages); } catch (e) { recentMessages = []; }\n}\nif (!Array.isArray(recentMessages)) recentMessages = [];\n\nconst normalizedRecent = recentMessages.map(item => ({\n  message: (((item && item.message) || '') + '').trim().toLowerCase(),\n  timestampMs: Number((item && (item.timestampMs ?? item.timestampms ?? item.timestamp)) || 0),\n}));\n\nconst recentWithinWindow = normalizedRecent.filter(item => (now - item.timestampMs) <= rateWindowMs);\nconst duplicateFound = recentWithinWindow.some(item => item.message === message);\nconst tooManyMessages = Number(row.recentCount || recentWithinWindow.length || 0) >= maxMessages;\n\nlet filterAction = 'allow';\nlet filterReason = '';\nlet reply = '';\n\nif (!message) {\n  filterAction = 'block';\n  filterReason = 'Empty message';\n  reply = 'Please enter a message first.';\n} else if (duplicateFound) {\n  filterAction = 'block';\n  filterReason = 'Duplicate message detected';\n  reply = 'Duplicate message detected. Please wait before sending the same message again.';\n} else if (tooManyMessages) {\n  filterAction = 'block';\n  filterReason = 'Too many messages sent in a short time';\n  reply = 'Too many messages received. Please wait a few seconds and try again.';\n}\n\n// Accuracy disclaimer cadence.\n//\n// Shown on the first message of a conversation, and again once the\n// conversation has been idle. 30 minutes is the standard session-inactivity\n// boundary in web analytics and live-chat tooling, so someone coming back\n// after a break is treated as a new visit and re-informed, while a continuous\n// conversation is never interrupted by it.\n//\n// Decided here rather than in the agent prompt on purpose: a model has no\n// reliable sense of elapsed time and cannot see whether it already disclaimed\n// earlier in the session, so asking it would mean either a disclaimer on every\n// single reply or one that quietly stops appearing.\nconst IDLE_MS = 30 * 60 * 1000;\nconst sessionMessageCount = Number(row.sessionMessageCount || 0);\nconst lastMessageAtMs = Number(row.lastMessageAtMs || 0);\nconst showDisclaimer =\n  sessionMessageCount === 0 ||\n  (lastMessageAtMs > 0 && (now - lastMessageAtMs) >= IDLE_MS);\n\nreturn [{ json: { userId, sessionId, user_message: message ? row.user_message : '', currentTimestamp: now, recentCount: Number(row.recentCount || recentWithinWindow.length || 0), filterAction, filterReason, filterReply: reply, showDisclaimer } }];"
+      },
+      "id": "ac1eee5a-4ab9-415a-a38a-64f68e190a8d",
+      "name": "Apply Filter Logic",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1536,
+        336
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "if1",
+              "leftValue": "={{ $json.filterAction }}",
+              "rightValue": "block",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "501dc7d4-cad2-4026-8073-7ab1401fb175",
+      "name": "If Blocked",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1312,
+        336
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify({ success: false, filtered: true, reason: $json.filterReason, reply: $json.filterReply, userId: $json.userId, sessionId: $json.sessionId }) }}",
+        "options": {}
+      },
+      "id": "2bfc76ae-6715-4bb0-93d6-96a2bb8d9711",
+      "name": "Respond Blocked",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        -1088,
+        240
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO n8n_chat_histories_family_council (session_id, message, created_at)\nVALUES ($1, $2, NOW())\nRETURNING id, created_at;",
+        "options": {
+          "queryReplacement": "={{ [ $json.sessionId, $json.user_message ] }}"
+        }
+      },
+      "id": "9253ad54-66fc-4f24-81ae-1d258a05d93c",
+      "name": "Postgres Insert Message",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -1088,
+        432
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const isFullPledge = $('Prepare Input').first().json.is_full_pledge === true;\nconst info = $('Identify Target Files').first().json;\nconst semantic = info.semantic || [];\n\n// Full-document rows for files explicitly named in the question\nconst fullRows = $('Fetch Target File Chunks').all()\n  .map(i => i.json || {})\n  .filter(r => r.content && (('' + r.content).trim().length > 0))\n  .filter(r => isFullPledge || ((r.access || 'public') === 'public'));\n\nconst MAX_CONTEXT = 60000; // chars; Gemini 2.5 Pro handles this comfortably\nconst parts = [];\nlet used = 0;\nlet sourceNo = 0;\nconst coveredFiles = new Set();\n\n// 1) FULL documents for explicitly referenced files\nif (fullRows.length > 0) {\n  const byFile = {};\n  for (const r of fullRows) {\n    const key = r.file_id || r.file_name;\n    (byFile[key] = byFile[key] || { name: r.file_name, folder: r.parent_folder || '', chunks: [] }).chunks.push(r);\n  }\n  for (const key of Object.keys(byFile)) {\n    const f = byFile[key];\n    f.chunks.sort((a, b) => (a.chunk_index || 0) - (b.chunk_index || 0));\n    const body = f.chunks.map(c => c.content).join('\\n');\n    const where = f.folder ? '\\nFolder: ' + f.folder : '';\n    const block = 'Source ' + (sourceNo + 1) + ' (FULL DOCUMENT)\\nFile: ' + (f.name || 'unknown') + where + '\\n\\n' + body;\n    if (used + block.length > MAX_CONTEXT) { continue; }\n    sourceNo++; parts.push(block); used += block.length; coveredFiles.add(key);\n  }\n}\n\n// 2) Top semantic excerpts from other files (up to 15 sources total)\nfor (const r of semantic) {\n  if (coveredFiles.has(r.fileId || r.fileName)) continue;\n  const block = 'Source ' + (sourceNo + 1) + '\\nFile: ' + (r.fileName || 'unknown') + '\\n\\n' + r.content;\n  if (used + block.length > MAX_CONTEXT) break;\n  sourceNo++; parts.push(block); used += block.length;\n}\n\n// 2.4) Folder listing. When the question names a date or a quoted phrase that\n// matched a FOLDER, say what that folder holds. The chunks alone cannot answer\n// \"what is in the June 11 folder\": the file inside is the May 21 minutes, and\n// nothing in its text mentions June 11, so the agent used to conclude it had\n// nothing and fall back.\nlet folderNote = '';\ntry {\n  const patterns = JSON.parse(info.patternPayload || '[]');\n  if (patterns.length) {\n    const byFolder = {};\n    for (const r of fullRows) {\n      const folder = ('' + (r.parent_folder || '')).trim();\n      if (!folder) continue;\n      const hit = patterns.some(p => folder.toLowerCase().indexOf(String(p).toLowerCase()) !== -1);\n      if (!hit) continue;\n      if (!byFolder[folder]) byFolder[folder] = [];\n      const name = r.file_name || 'unknown';\n      if (byFolder[folder].indexOf(name) === -1) byFolder[folder].push(name);\n    }\n    const lines = Object.keys(byFolder).map(f => '\"' + f + '\" contains: ' + byFolder[f].join('; '));\n    if (lines.length) {\n      folderNote = '\\n\\n-----------------\\n\\nFOLDER CONTENTS (authoritative, from the Drive listing): ' + lines.join(' | ') +\n        '. A meeting folder is named for the MEETING date and holds that meeting\\'s agenda plus the PREVIOUS meeting\\'s minutes, so a file dated earlier than its folder is expected and is not an error. If asked what a folder contains, answer from this listing.';\n    }\n  }\n} catch (e) { /* patterns are optional */ }\n\n// 2.5) Recency. Two separate facts, and they are usually DIFFERENT dates:\n//   - the latest MEETING is the newest folder date (Resolve Latest Meeting)\n//   - the latest MINUTES file is one meeting behind, because a meeting's folder\n//     carries the previous meeting's minutes\n// Answering the first with the second is the bug this section exists to stop.\nlet recencyNote = '';\nconst recencyTopic = info.recencyTopic || '';\nif (recencyTopic) {\n  let latestMeeting = '';\n  try { latestMeeting = (($('Resolve Latest Meeting').first() || {}).json || {}).meeting_date || ''; } catch (e) { /* optional */ }\n\n  const dated = fullRows\n    .map(r => ('' + (r.file_name || '')))\n    .filter(n => n.toLowerCase().indexOf(recencyTopic.toLowerCase()) !== -1 && /\\d{4}-\\d{2}-\\d{2}/.test(n));\n  // File names start with an ISO date, so a lexical sort is a date sort.\n  const newestDoc = dated.length ? dated.sort().reverse()[0] : '';\n\n  const bits = [];\n  if (latestMeeting) {\n    bits.push('The most recent Family Council meeting took place on ' + latestMeeting + '. Each meeting has its own folder named for the meeting date, holding that meeting\\'s agenda and the PREVIOUS meeting\\'s minutes, so the newest minutes document is always one meeting behind. If asked when the last meeting was, answer ' + latestMeeting + ' and do NOT answer with the date on the newest minutes file.');\n  }\n  if (newestDoc) {\n    bits.push('The newest ' + recencyTopic + ' document held is \"' + newestDoc + '\", included above in full; if minutes for the latest meeting are not present, say they are not available yet.');\n  }\n  bits.push('A date written inside a document, such as a future meeting being scheduled, is not authoritative unless it matches the above.');\n  if (bits.length) recencyNote = '\\n\\n-----------------\\n\\nNOTE: ' + bits.join(' ');\n}\n\n// 2.6) An image the user pasted with THIS message, transcribed by vision.\n// User-supplied, not Knowledge Base content - the prompt says so as well,\n// otherwise the answer-only-from-the-KB rule makes the agent refuse to discuss\n// the very screenshot the user just sent.\nlet chatImageNote = '';\ntry {\n  const described = (($('Describe Chat Image').first() || {}).json || {});\n  const text = ('' + (described.text || described.output || described.response || '')).trim();\n  if (text) {\n    chatImageNote = '\\n\\n-----------------\\n\\nIMAGE SENT BY THE USER WITH THIS MESSAGE (transcribed automatically, provided by the user rather than the Knowledge Base):\\n' + text;\n  }\n} catch (e) { /* no image on this message - the vision branch did not run */ }\n\n// 3) Tell the agent which files have stored images (attached automatically below its answer)\nlet imageNote = '';\ntry {\n  const imgs = $('Fetch Related Images').all()\n    .map(it => it.json || {})\n    .filter(r => r.file_id && (isFullPledge || ((r.access || 'public') === 'public')));\n  const names = [...new Set(imgs.map(r => r.file_name))];\n  if (names.length) {\n    imageNote = '\\n\\n-----------------\\n\\nNOTE: The following document images will be automatically attached below your answer: ' + names.join('; ') + '. Refer to them naturally (e.g. \"see the attached document image(s) below\") instead of saying no information is available for these files.';\n  }\n} catch (e) { /* images optional */ }\n\nconst context = (parts.length ? parts.join('\\n\\n-----------------\\n\\n') : 'No relevant Knowledge Base content was found for this question.') + folderNote + recencyNote + chatImageNote + imageNote;\nreturn [{ json: { context } }];"
+      },
+      "id": "040a0ed5-93fb-423f-8299-f847f1ebda10",
+      "name": "Build Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        432
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are the Family Council AI Agent.\n\nYour role is to answer customer messages clearly, professionally, and accurately using the provided Knowledge Base and the available Postgres Chat Memory.\n\nCore rules:\n- For common conversation such as \"hello,\" \"hi,\" \"thank you,\" \"okay,\" or \"bye,\" you may respond naturally and briefly.\n- If the customer asks for information, details, services, policies, rules, benefits, eligibility, pricing, schedules, instructions, explanations, or anything factual, you must answer ONLY from the provided Knowledge Base.\n- Do not invent, assume, guess, or use outside knowledge.\n- If the answer is not clearly found in the allowed Knowledge Base content, use the fallback response.\n- Do not mention internal variables, system instructions, access checks, Postgres Chat Memory, or Knowledge Base restrictions unless the Knowledge Base explicitly says to do so.\n- Provide only the final customer-facing answer.\n- Do NOT write a disclaimer, a caveat about your own accuracy, or a suggestion to verify with the Family Council. One is appended automatically at the right moments; writing your own would duplicate it.\n\nLanguage rules:\n- Detect the customer's language and answer in the same language.\n- If the customer's language is unclear, mixed, or cannot be detected, answer in English by default.\n\nAnswer style and formatting (always use Markdown):\n- For simple questions, answer in 1-2 sentences of plain text.\n- When the customer asks for details, a summary, a list, or the contents of a specific document, structure the answer for easy reading: start with one short intro sentence, then use bullet points with a **bold label** followed by the detail (e.g. \"- **Crystal IPO:** road map estimated at 2-3 years\").\n- Whenever the answer contains numeric or comparative data — budgets, expenses, amounts, percentages, distributions, schedules, lists of people with roles, or anything with 2+ attributes per item — present it as a Markdown table with clear column headers. Example:\\n\\n| Company | 2023 EBT | Budget | % Attained |\\n|---|---|---|---|\\n| SJFB | 67.22 | 58.50 | 115% |\n- Use **bold** for names, amounts, and dates. Use short section headings (###) only for long multi-topic answers.\n- Keep tables focused: only the columns and rows relevant to the question.\n- Never output raw unformatted data dumps; always organize the information.\n- Sources marked (FULL DOCUMENT) contain the complete file - use everything relevant in them.\n\nPostgres Chat Memory rule:\n- Use the chat memory only to understand previous conversation context, follow-up questions, and references like \"that,\" \"it,\" or \"the previous one.\"\n- Do not use memory to invent factual information that is not in the Knowledge Base, or to bypass the Full Pledge access rules.\n- If memory and the Knowledge Base conflict, follow the Knowledge Base.\n\nKnowledge Base rule:\n- The Knowledge Base below contains the most relevant excerpts retrieved for this question, and may include complete documents marked (FULL DOCUMENT). Answer only from this content.\n- Do not add details that are not explicitly stated in the Knowledge Base.\n- A note marked NOTE: is authoritative guidance about the documents. Follow it over any date or claim written inside a document body.\n\nImage rule:\n{{ $('Prepare Input').first().json.image_url ? '- A block headed IMAGE SENT BY THE USER WITH THIS MESSAGE is a transcription of a picture the customer attached to this message. It comes from the customer, not the Knowledge Base, so the answer-only-from-the-Knowledge-Base rule does NOT apply to it.\\n- You may describe, summarise, quote and answer questions about that image freely, and combine it with Knowledge Base content when the customer asks you to compare or check something.\\n- Never claim you cannot see images while that block is present.' : '- The customer has NOT attached an image to this message. Do not mention images at all: do not say that an image is missing, could not be found or failed to attach, and do not ask the customer to send or resend one. If earlier messages in the conversation involved an image, ignore that unless the customer explicitly asks about it now.' }}\n\nFull Pledge access rule:\n- The customer Full Pledge status is provided below. The Knowledge Base excerpts have already been filtered for the customer's access level, but if an excerpt is explicitly marked as Full Pledge only, premium-only, member-only, or restricted and the status is false, do not use that excerpt and use the fallback response instead.\n\nFallback rule:\n- If there is no valid answer in the Knowledge Base for the customer's access level, reply with EXACTLY this sentence and nothing else: \"{{ $('Prepare Input').first().json.is_full_pledge === true ? \"I don't have enough information in the available to answer that.\" : \"Thanks for checking. This information isn’t available to you just yet.\" }}\"\n- Do not add an explanation, an apology, or a suggestion to contact anyone. Do not say why the information is missing.\n- This fallback does not apply when the customer has sent an image and is asking about that image.\n\nCustomer message:\n{{ $(\"Apply Filter Logic\").item.json.user_message }}\n\nCustomer Full Pledge status:\n{{ $(\"Prepare Input\").item.json.is_full_pledge }}\n\nKnowledge Base:\n{{ $json.context }}",
+        "options": {
+          "systemMessage": "You are the Family Council System chatbot assistant. Answer clearly, politely, and professionally. Format every reply in clean Markdown for chat display: short paragraphs, bullet points with bold labels for lists, and Markdown tables for numeric or multi-attribute data. If the user question is unclear, ask one short clarifying question.",
+          "enableStreaming": false
+        }
+      },
+      "id": "1464cc1b-e7b0-40eb-9da8-9ad84d6c8a24",
+      "name": "AI Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1184,
+        432
+      ]
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "GCP_PROJECT_REDACTED",
+          "mode": "id"
+        },
+        "modelName": "gemini-2.5-pro",
+        "options": {}
+      },
+      "id": "acb550ff-b1f1-4603-ace8-1489efc8c2ab",
+      "name": "Google Vertex Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleVertex",
+      "typeVersion": 1,
+      "position": [
+        1184,
+        672
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "REDACTED",
+          "name": "Google Service Account Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Webhook for Family Council').item.json.body.sender.id }}",
+        "tableName": "n8n_chat_memory_family_council",
+        "contextWindowLength": 20
+      },
+      "id": "29372f07-7492-4d2d-bb8e-58bb98951d1e",
+      "name": "Postgres Chat Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryPostgresChat",
+      "typeVersion": 1.4,
+      "position": [
+        1328,
+        672
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ JSON.stringify({ success: true, filtered: false, reply: $json.output || $json.text || $json.response || \"No reply generated\", userId: $(\"Apply Filter Logic\").first().json.userId, sessionId: $(\"Apply Filter Logic\").first().json.sessionId }) }}",
+        "options": {
+          "enableStreaming": false
+        }
+      },
+      "id": "9940da82-d9f7-432d-861c-dd58bbd401d1",
+      "name": "Respond Allowed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1632,
+        432
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Family Council Chat v2 (RAG)\n\n- Webhook path is REDACTED so it does not clash with the live v1 workflow. At cutover, unpublish v1 and change this path back to REDACTED.\n- Retrieval: the question is embedded (RETRIEVAL_QUERY) and the top 5 chunks are fetched from the documents table with cosine distance. Non Full Pledge users only ever receive chunks tagged access=public - restricted content never enters the prompt.\n- Run the \"Family Council v2 - KB Ingestion (Google Drive)\" workflow first to populate the documents table.\n- Attach credentials on: Postgres nodes, Vertex Embed Question (Google OAuth2), Google Vertex Chat Model (Google Vertex service account).",
+        "height": 200,
+        "width": 500,
+        "color": 5
+      },
+      "id": "d8b31254-20be-45ad-b26e-19a7b740676f",
+      "name": "Sticky Note 13d637bf",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -2224,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "GCP_PROJECT_REDACTED",
+          "mode": "id"
+        }
+      },
+      "id": "5c4ee9e4-18f9-4a5c-ba83-dd71f94f822c",
+      "name": "Embeddings Google Vertex",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsGoogleVertex",
+      "typeVersion": 1,
+      "position": [
+        -720,
+        800
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "REDACTED",
+          "name": "Google Service Account Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "load",
+        "tableName": "fc_kb_vectors",
+        "prompt": "={{ $('Apply Filter Logic').item.json.user_message }}",
+        "topK": 20,
+        "options": {}
+      },
+      "id": "1c89d6af-2440-4a88-979f-a8de16072aa7",
+      "name": "Retrieve KB Chunks",
+      "type": "@n8n/n8n-nodes-langchain.vectorStorePGVector",
+      "typeVersion": 1.3,
+      "position": [
+        -720,
+        320
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const userMessage = (($('Apply Filter Logic').first().json.user_message || '') + '').toLowerCase();\nconst isFullPledge = $('Prepare Input').first().json.is_full_pledge === true;\n\nconst rows = $input.all()\n  .map(i => {\n    const d = (i.json && i.json.document) ? i.json.document : (i.json || {});\n    return {\n      content: d.pageContent || d.text || d.content || '',\n      meta: d.metadata || i.json.metadata || {},\n      score: Number(i.json.score || 999)\n    };\n  })\n  .filter(r => r.content && r.content.trim().length > 0)\n  // Deterministic access enforcement: non full-pledge users only ever get public chunks\n  .filter(r => isFullPledge || ((r.meta.access || 'public') === 'public'));\n\n// Filename-aware boost: question mentions a file name or its date\nfunction boostFor(fileName) {\n  const name = ((fileName || '') + '').toLowerCase().replace(/\\.[a-z0-9]+$/, '');\n  if (!name) return 0;\n  let boost = 0;\n  if (userMessage.includes(name)) boost += 100;\n  const dateMatch = name.match(/\\d{4}-\\d{2}-\\d{2}/);\n  if (dateMatch && userMessage.includes(dateMatch[0])) boost += 50;\n  const tokens = name.split(/[^a-z0-9]+/).filter(t => t.length >= 5);\n  for (const t of tokens) { if (userMessage.includes(t)) boost += 1; }\n  return boost;\n}\nfor (const r of rows) r.boost = boostFor(r.meta.fileName);\nrows.sort((a, b) => (b.boost - a.boost) || (a.score - b.score));\n\n// 1) Files explicitly referenced among the retrieved results get their FULL content fetched\nconst targetIds = [];\nfor (const r of rows) {\n  if (r.boost >= 50 && r.meta.fileId && !targetIds.includes(r.meta.fileId)) targetIds.push(r.meta.fileId);\n  if (targetIds.length >= 3) break;\n}\n\n// 2) Direct name/date patterns from the question, independent of semantic\n//    retrieval. 'Fetch Target File Chunks' matches these against BOTH file\n//    names and folder names, so a date that names a meeting pulls in whatever\n//    lives in that meeting's folder.\nconst namePatterns = [];\nfunction addPattern(p) {\n  const clean = ('' + p).trim();\n  if (clean && !namePatterns.includes(clean)) namePatterns.push(clean);\n}\n\n// 2a) ISO dates, written as they appear in file and folder names\nfor (const d of (userMessage.match(/\\d{4}-\\d{2}-\\d{2}/g) || [])) addPattern(d);\n\n// 2b) Plain English dates. People ask about \"the june 11 2026 meeting\", not\n//     \"2026-06-11\", and before this nothing was extracted from that at all -\n//     the question produced no pattern and the folder was never consulted.\nconst MONTHS = {\n  january: 1, jan: 1, february: 2, feb: 2, march: 3, mar: 3, april: 4, apr: 4,\n  may: 5, june: 6, jun: 6, july: 7, jul: 7, august: 8, aug: 8,\n  september: 9, sept: 9, sep: 9, october: 10, oct: 10, november: 11, nov: 11,\n  december: 12, dec: 12\n};\nfunction iso(year, month, day) {\n  return year + '-' + String(month).padStart(2, '0') + '-' + String(day).padStart(2, '0');\n}\nlet m;\n// \"june 11 2026\", \"june 11th, 2026\"\nconst monthFirst = /\\b([a-z]{3,9})\\s+(\\d{1,2})(?:st|nd|rd|th)?,?\\s+(\\d{4})\\b/g;\nwhile ((m = monthFirst.exec(userMessage)) !== null) {\n  const mo = MONTHS[m[1]];\n  if (mo) addPattern(iso(m[3], mo, m[2]));\n}\n// \"11 june 2026\", \"11th of june 2026\"\nconst dayFirst = /\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?([a-z]{3,9}),?\\s+(\\d{4})\\b/g;\nwhile ((m = dayFirst.exec(userMessage)) !== null) {\n  const mo = MONTHS[m[2]];\n  if (mo) addPattern(iso(m[3], mo, m[1]));\n}\n\n// 2c) \"quoted names\" are looked up straight in the DB\nfor (const q of (userMessage.match(/\"([^\"]{4,80})\"/g) || [])) addPattern(q.replace(/\"/g, ''));\n\n// 3) Recency intent.\n//    Semantic search has no notion of dates: every set of Family Council\n//    Minutes reads almost identically, so \"when was the last FC meeting?\"\n//    returned whichever year happened to rank. Detect the intent here;\n//    'Fetch Target File Chunks' resolves the newest matching file from the ISO\n//    date in its name, which needs no date metadata and so needed no\n//    re-embedding.\nconst RECENCY_RE = /\\b(latest|last|most recent|newest|current|up[- ]to[- ]date)\\b/;\nconst TOPIC_RULES = [\n  // agenda first: \"the last meeting agenda\" wants the agenda, not the minutes\n  { re: /\\bagenda\\b/, topic: 'Family Council Agenda' },\n  { re: /\\b(minutes|meeting|meetings)\\b/, topic: 'Family Council Minutes' }\n];\nlet recencyTopic = '';\nif (RECENCY_RE.test(userMessage)) {\n  for (const rule of TOPIC_RULES) {\n    if (rule.re.test(userMessage)) { recencyTopic = rule.topic; break; }\n  }\n}\n\nreturn [{ json: {\n  targetFileIds: targetIds,\n  targetPayload: JSON.stringify(targetIds),\n  patternPayload: JSON.stringify(namePatterns.slice(0, 5)),\n  recencyTopic: recencyTopic,\n  semantic: rows.slice(0, 15).map(r => ({\n    content: r.content,\n    fileName: r.meta.fileName || 'unknown',\n    fileId: r.meta.fileId || '',\n    access: r.meta.access || 'public',\n    chunkIndex: Number(r.meta.chunkIndex || 0)\n  }))\n} }];"
+      },
+      "id": "e954a33a-09f6-4acb-acd5-ec260770659a",
+      "name": "Identify Target Files",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -512,
+        432
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH ids AS (SELECT jsonb_array_elements_text($1::jsonb) AS fid),\n     pats AS (SELECT jsonb_array_elements_text($2::jsonb) AS pat),\n     -- Recency lookup. Cosine similarity cannot tell 2025 minutes from 2026\n     -- minutes - they read alike - so \"the last FC meeting\" used to return an\n     -- arbitrary year. When the question asks for the latest of something,\n     -- resolve it from the ISO date in the file name instead of by ranking.\n     -- Access is filtered HERE as well: a non Full Pledge user must get the\n     -- newest PUBLIC document or nothing, never the newest restricted one.\n     latest AS (\n       SELECT metadata->>'fileId' AS fid\n       FROM fc_kb_vectors\n       WHERE $3::text <> ''\n         AND metadata->>'fileName' ILIKE '%' || $3::text || '%'\n         AND metadata->>'fileName' ~ '\\d{4}-\\d{2}-\\d{2}'\n         AND ($4::boolean OR COALESCE(metadata->>'access','public') = 'public')\n       ORDER BY substring(metadata->>'fileName' from '\\d{4}-\\d{2}-\\d{2}') DESC\n       LIMIT 1\n     ),\n     -- Files that live INSIDE a folder the question names.\n     --\n     -- Asking about \"the June 11 2026 meeting\" has to return what is in the\n     -- 2026-06-11 folder, not only files whose own name carries that date. A\n     -- meeting folder holds that meeting's agenda and the PREVIOUS meeting's\n     -- minutes, so for many meetings NOTHING inside is named for the meeting\n     -- being asked about, and matching file names alone found nothing at all.\n     --\n     -- parent_folder exists only in fc_kb_queue; fc_kb_vectors metadata has no\n     -- folder field, which is why this needs the join.\n     folder_files AS (\n       SELECT q.file_id AS fid\n       FROM fc_kb_queue q\n       WHERE EXISTS (SELECT 1 FROM pats WHERE q.parent_folder ILIKE '%' || pat || '%')\n         AND ($4::boolean OR replace(replace(lower(q.parent_folder), '-', ' '), '_', ' ') NOT LIKE '%full pledge%')\n       LIMIT 40\n     )\n-- parent_folder rides along so Build Context can say WHERE a file lives, not\n-- just what it says. Without it the agent has the right document but no way to\n-- answer \"what is in that folder\".\nSELECT v.\"text\" AS content,\n       v.metadata->>'fileName' AS file_name,\n       v.metadata->>'fileId' AS file_id,\n       COALESCE(v.metadata->>'access','public') AS access,\n       COALESCE((v.metadata->>'chunkIndex')::int, 0) AS chunk_index,\n       q.parent_folder AS parent_folder\nFROM fc_kb_vectors v\nLEFT JOIN fc_kb_queue q ON q.file_id = v.metadata->>'fileId'\nWHERE v.metadata->>'fileId' IN (SELECT fid FROM ids)\n   OR v.metadata->>'fileId' IN (SELECT fid FROM latest)\n   OR v.metadata->>'fileId' IN (SELECT fid FROM folder_files)\n   OR EXISTS (SELECT 1 FROM pats WHERE v.metadata->>'fileName' ILIKE '%' || pat || '%')\nORDER BY v.metadata->>'fileId', COALESCE((v.metadata->>'chunkIndex')::int, 0)\nLIMIT 80;",
+        "options": {
+          "queryReplacement": "={{ [ $json.targetPayload, $json.patternPayload, $json.recencyTopic || '', String($('Prepare Input').first().json.is_full_pledge === true) ] }}"
+        }
+      },
+      "id": "657b5966-ad08-4a96-b1bd-0126fd154bff",
+      "name": "Fetch Target File Chunks",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -288,
+        432
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Convert the agent's Markdown answer into clean HTML for the portal chat widget\nconst raw = ($json.output || $json.text || $json.response || '') + '';\n\nfunction esc(s) {\n  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n}\nfunction inline(s) {\n  return s.replace(/\\*\\*([^*]+)\\*\\*/g, '<b>$1</b>');\n}\n\nconst lines = raw.split(/\\r?\\n/);\nconst out = [];\nlet i = 0;\nlet listTag = null;\nfunction closeList() {\n  if (listTag) { out.push('</' + listTag + '>'); listTag = null; }\n}\n\nwhile (i < lines.length) {\n  const t = lines[i].trim();\n\n  // Markdown table block -> HTML table\n  if (t.startsWith('|') && t.endsWith('|')) {\n    closeList();\n    const tbl = [];\n    while (i < lines.length && lines[i].trim().startsWith('|')) { tbl.push(lines[i].trim()); i++; }\n    const rows = tbl\n      .filter(r => !/^\\|[\\s:\\-|]+\\|$/.test(r))\n      .map(r => r.replace(/^\\||\\|$/g, '').split('|').map(c => inline(esc(c.trim()))));\n    if (rows.length) {\n      let html = '<table style=\"border-collapse:collapse;margin:8px 0\">';\n      rows.forEach((cells, idx) => {\n        const tag = idx === 0 ? 'th' : 'td';\n        const style = 'border:1px solid #888;padding:4px 10px;text-align:left' + (idx === 0 ? ';font-weight:bold;background:rgba(128,128,128,0.2)' : '');\n        html += '<tr>' + cells.map(c => '<' + tag + ' style=\"' + style + '\">' + c + '</' + tag + '>').join('') + '</tr>';\n      });\n      html += '</table>';\n      out.push(html);\n    }\n    continue;\n  }\n\n  // Headings (#, ##, ###)\n  const h = t.match(/^#{1,4}\\s+(.*)$/);\n  if (h) {\n    closeList();\n    out.push('<div style=\"font-weight:bold;font-size:1.08em;margin:12px 0 4px\">' + inline(esc(h[1])) + '</div>');\n    i++; continue;\n  }\n\n  // Bullet list items (- or *)\n  const b = t.match(/^[-*]\\s+(.*)$/);\n  if (b) {\n    if (listTag !== 'ul') { closeList(); out.push('<ul style=\"margin:4px 0;padding-left:20px\">'); listTag = 'ul'; }\n    out.push('<li style=\"margin:3px 0\">' + inline(esc(b[1])) + '</li>');\n    i++; continue;\n  }\n\n  // Numbered list items (1. / 1))\n  const n = t.match(/^\\d+[.)]\\s+(.*)$/);\n  if (n) {\n    if (listTag !== 'ol') { closeList(); out.push('<ol style=\"margin:4px 0;padding-left:20px\">'); listTag = 'ol'; }\n    out.push('<li style=\"margin:3px 0\">' + inline(esc(n[1])) + '</li>');\n    i++; continue;\n  }\n\n  // Blank line ends any open list\n  if (t === '') { closeList(); i++; continue; }\n\n  // Regular paragraph\n  closeList();\n  out.push('<p style=\"margin:6px 0\">' + inline(esc(t)) + '</p>');\n  i++;\n}\ncloseList();\n\n// Attach stored document images (image files + scanned PDF pages) below the answer\ntry {\n  const isFullPledge = $('Prepare Input').first().json.is_full_pledge === true;\n  const BASE = 'https://N8N_HOST_REDACTED/webhook/REDACTED';\n  const imgs = $('Fetch Related Images').all()\n    .map(it => it.json || {})\n    .filter(r => r.file_id && (isFullPledge || ((r.access || 'public') === 'public')));\n  if (imgs.length) {\n    out.push('<div style=\"font-weight:bold;font-size:1.08em;margin:14px 0 4px\">Attached document images</div>');\n    let lastFile = '';\n    for (const im of imgs.slice(0, 8)) {\n      if (im.file_name !== lastFile) {\n        out.push('<p style=\"margin:8px 0 2px\"><b>' + esc(String(im.file_name || '')) + '</b></p>');\n        lastFile = im.file_name;\n      }\n      out.push('<img src=\"' + BASE + '?fid=' + encodeURIComponent(im.file_id) + '&page=' + (Number(im.page) || 1) + '\" style=\"max-width:100%;border:1px solid #888;border-radius:6px;margin:4px 0\" alt=\"' + esc(String(im.file_name || 'document image')) + '\"/>');\n    }\n  }\n} catch (e) { /* images are optional - never break the reply */ }\n\n// Accuracy disclaimer. 'Apply Filter Logic' decides WHEN: first message of a\n// conversation, or the first message back after 30 minutes of silence.\n//\n// Appended BELOW the answer, under a hairline rule, and labelled 'Disclaimer:'\n// so it is named rather than reading as unexplained small print. As a filled\n// panel above the answer it looked like a separate incoming message.\n//\n// Built here rather than asked of the model so the wording is exact and cannot\n// drift; the agent prompt separately forbids it writing its own.\nlet disclaimer = '';\ntry {\n  if ($('Apply Filter Logic').first().json.showDisclaimer === true) {\n    disclaimer =\n      '<p style=\"margin:12px 0 0;padding-top:8px;border-top:1px solid rgba(128,128,128,0.35);' +\n      'font-size:0.85em;line-height:1.45;opacity:0.75\">' +\n      '<b>Disclaimer:</b> ' +\n      'The MFC Chatbot is here to help, but its responses may not always be complete or fully accurate. ' +\n      'If you have any questions or need further clarification, please feel free to check directly with the Family Council.' +\n      '</p>';\n  }\n} catch (e) { /* never withhold an answer because the flag was unreadable */ }\n\nreturn [{ json: { output: out.join('') + disclaimer, output_markdown: raw } }];"
+      },
+      "id": "ae8c3909-0955-4441-a73b-def2fc9f0b37",
+      "name": "Format Reply as HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1408,
+        432
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH ids AS (SELECT jsonb_array_elements_text($1::jsonb) AS fid),\n     pats AS (SELECT jsonb_array_elements_text($2::jsonb) AS pat)\nSELECT DISTINCT file_id, file_name, page, COALESCE(access,'public') AS access\nFROM fc_kb_images\nWHERE file_id IN (SELECT fid FROM ids)\n   OR EXISTS (SELECT 1 FROM pats WHERE file_name ILIKE '%' || pat || '%')\nORDER BY file_name, page\nLIMIT 12;",
+        "options": {
+          "queryReplacement": "={{ [ $('Identify Target Files').first().json.targetPayload, $('Identify Target Files').first().json.patternPayload ] }}"
+        }
+      },
+      "id": "8621ea69-9a78-4af8-8ec5-f303912230fb",
+      "name": "Fetch Related Images",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -64,
+        432
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "path": "REDACTED",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "3ac96a11-726d-4c3d-adfc-bb83b5b790a4",
+      "name": "Image Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -2208,
+        768
+      ],
+      "webhookId": "REDACTED"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT image_base64, mime_type, file_name\nFROM fc_kb_images\nWHERE file_id = $1 AND page = $2\nLIMIT 1;",
+        "options": {
+          "queryReplacement": "={{ [ $json.query.fid, Number($json.query.page || 1) ] }}"
+        }
+      },
+      "id": "36d0dc11-e146-458b-9a8b-47af8bf4ac28",
+      "name": "Load KB Image",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -1984,
+        768
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Turn the stored base64 into a real image binary for the webhook response\nconst row = ($input.first() && $input.first().json) || {};\nlet b64 = row.image_base64;\nlet mime = row.mime_type || 'image/jpeg';\nlet name = row.file_name || 'image.jpg';\nif (!b64) {\n  // 1x1 transparent PNG fallback so missing images never break the page\n  b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';\n  mime = 'image/png';\n  name = 'not-found.png';\n}\nconst binary = await this.helpers.prepareBinaryData(Buffer.from(b64, 'base64'), name, mime);\nreturn [{ json: { file_name: name }, binary: { data: binary } }];"
+      },
+      "id": "467f42a1-2ea9-4bf2-a450-0b45934f6c9b",
+      "name": "Image To Binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1760,
+        768
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "binary",
+        "options": {}
+      },
+      "id": "3fca5f11-c92e-4f31-bc23-cbf94b83f12f",
+      "name": "Respond Image",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        -1536,
+        768
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "fp1",
+              "leftValue": "={{ $('Prepare Input').first().json.is_full_pledge }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "03757d27-2098-4d44-bcc5-d0b5af558b63",
+      "name": "Is Full Pledge",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -928,
+        432
+      ],
+      "notes": "Routes retrieval by access level so the vector search ranks only chunks the asker is allowed to see. Removed by an editor autosave on 20 Aug 2026; restored 28 Aug. Do not delete."
+    },
+    {
+      "parameters": {
+        "mode": "load",
+        "tableName": "fc_kb_vectors",
+        "prompt": "={{ $('Apply Filter Logic').item.json.user_message }}",
+        "topK": 20,
+        "options": {
+          "metadata": {
+            "metadataValues": [
+              {
+                "name": "access",
+                "value": "public"
+              }
+            ]
+          }
+        }
+      },
+      "id": "dc9a38e5-afe3-4589-affc-caa619f4fa03",
+      "name": "Retrieve Public Chunks",
+      "type": "@n8n/n8n-nodes-langchain.vectorStorePGVector",
+      "typeVersion": 1.3,
+      "position": [
+        -720,
+        560
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      },
+      "notes": "Same search as Retrieve KB Chunks but restricted to access=public BEFORE ranking. 3855 of 3973 chunks are full_pledge, so without this a non Full Pledge user's top 20 are almost always all restricted, get dropped, and leave an empty context."
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- The FOLDER is named for the meeting date. It holds that meeting's agenda and\n-- the PREVIOUS meeting's minutes, so the newest minutes file is always one\n-- meeting behind and must never be used to answer \"when was the last meeting\".\n-- e.g. folder '2026-06-11 ...' contains '2026-05-21 Family Council Minutes.pdf'.\n--\n-- The folder only exists in fc_kb_queue; fc_kb_vectors metadata has no folder\n-- field, which is why this cannot be answered from the vector store alone.\n--\n-- Access mirrors ingestion exactly: a folder path containing 'full pledge'\n-- (with - and _ treated as spaces) is restricted, so a non Full Pledge user\n-- never learns a restricted meeting date.\nSELECT substring(parent_folder from '\\d{4}-\\d{2}-\\d{2}') AS meeting_date,\n       parent_folder\nFROM fc_kb_queue\nWHERE parent_folder ILIKE '%Family Council Digital Folder%'\n  AND parent_folder ~ '\\d{4}-\\d{2}-\\d{2}'\n  AND ($1::boolean OR replace(replace(lower(parent_folder), '-', ' '), '_', ' ') NOT LIKE '%full pledge%')\nORDER BY 1 DESC\nLIMIT 1;",
+        "options": {
+          "queryReplacement": "={{ [ String($('Prepare Input').first().json.is_full_pledge === true) ] }}"
+        }
+      },
+      "id": "16bb1e7b-2c41-478d-aeda-0200e108e714",
+      "name": "Resolve Latest Meeting",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        64,
+        560
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      },
+      "notes": "Meeting dates come from folder names, not file names. Returns nothing for a non Full Pledge user when every meeting folder is restricted."
+    },
+    {
+      "id": "2c1e4d4d-fc10-48dc-900e-138eea6ac608",
+      "name": "Has Chat Image?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        288,
+        700
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "img1",
+              "leftValue": "={{ $('Prepare Input').first().json.image_url }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "notes": "Most messages carry no image, so the vision hop is skipped rather than paying for a download and a model call on every question. Deleted by an editor autosave 28 Aug 2026; restored. Do not delete."
+    },
+    {
+      "id": "8ffb0fb3-9eb5-4517-adf5-615a41de12d2",
+      "name": "Download Chat Image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        512,
+        800
+      ],
+      "parameters": {
+        "url": "={{ $('Prepare Input').first().json.image_url }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "notes": "Signed URL from the app's private chat-attachments bucket.",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "c3138b85-cdc4-4cf8-b912-a65161caa669",
+      "name": "Describe Chat Image",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        736,
+        800
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "Describe the attached image factually and in detail. If it contains any text, transcribe that text exactly, including error messages, labels, figures and dates. If it is a screenshot of an application, describe what is on screen. Output only the description, with no preamble and no markdown fences.",
+        "messages": {
+          "messageValues": [
+            {
+              "type": "HumanMessagePromptTemplate",
+              "messageType": "imageBinary",
+              "imageDetail": "high"
+            }
+          ]
+        }
+      },
+      "notes": "Turns the pasted image into text the agent can reason over. Failures continue, so a broken image never costs the user their answer.",
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    }
+  ],
+  "connections": {
+    "Webhook for Family Council": {
+      "main": [
+        [
+          {
+            "node": "Prepare Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Input": {
+      "main": [
+        [
+          {
+            "node": "Postgres Get Recent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres Get Recent": {
+      "main": [
+        [
+          {
+            "node": "Apply Filter Logic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Filter Logic": {
+      "main": [
+        [
+          {
+            "node": "If Blocked",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If Blocked": {
+      "main": [
+        [
+          {
+            "node": "Respond Blocked",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Postgres Insert Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Context": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Vertex Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Describe Chat Image",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres Chat Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings Google Vertex": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Retrieve KB Chunks",
+            "type": "ai_embedding",
+            "index": 0
+          },
+          {
+            "node": "Retrieve Public Chunks",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retrieve KB Chunks": {
+      "main": [
+        [
+          {
+            "node": "Identify Target Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Identify Target Files": {
+      "main": [
+        [
+          {
+            "node": "Fetch Target File Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Format Reply as HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Reply as HTML": {
+      "main": [
+        [
+          {
+            "node": "Respond Allowed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Target File Chunks": {
+      "main": [
+        [
+          {
+            "node": "Fetch Related Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Image Webhook": {
+      "main": [
+        [
+          {
+            "node": "Load KB Image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load KB Image": {
+      "main": [
+        [
+          {
+            "node": "Image To Binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Image To Binary": {
+      "main": [
+        [
+          {
+            "node": "Respond Image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Postgres Insert Message": {
+      "main": [
+        [
+          {
+            "node": "Is Full Pledge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Full Pledge": {
+      "main": [
+        [
+          {
+            "node": "Retrieve KB Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Retrieve Public Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retrieve Public Chunks": {
+      "main": [
+        [
+          {
+            "node": "Identify Target Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Related Images": {
+      "main": [
+        [
+          {
+            "node": "Resolve Latest Meeting",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve Latest Meeting": {
+      "main": [
+        [
+          {
+            "node": "Has Chat Image?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Chat Image?": {
+      "main": [
+        [
+          {
+            "node": "Download Chat Image",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Chat Image": {
+      "main": [
+        [
+          {
+            "node": "Describe Chat Image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Describe Chat Image": {
+      "main": [
+        [
+          {
+            "node": "Build Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true,
+    "binaryMode": "separate"
+  },
+  "pinData": {}
+}

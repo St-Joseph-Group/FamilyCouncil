@@ -1,0 +1,57 @@
+{
+  "name": "Family Council v2 - KB Error Logger",
+  "nodes": [
+    {
+      "id": "cd3490f8-b3de-4826-b4a8-546016d7bb6d",
+      "name": "On Workflow Error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "89ced890-fdcb-4a89-a74b-736a6b973bc4",
+      "name": "Write Failure Row",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        224,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Record the failure, and best-effort attach the file that was claimed at\n-- the time so a repeatedly-failing document can be identified from SQL alone.\nINSERT INTO fc_kb_errors (workflow_name, execution_id, last_node, message, file_name)\nSELECT $1, $2, $3, $4,\n       (SELECT file_name FROM fc_kb_queue\n         WHERE status = 'processing'\n         ORDER BY updated_at DESC LIMIT 1);",
+        "options": {
+          "queryReplacement": "={{ [ $json.workflow?.name || 'unknown', String($json.execution?.id || ''), $json.execution?.lastNodeExecuted || '', ($json.execution?.error?.message || $json.execution?.error?.description || 'unknown').slice(0, 500) ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "On Workflow Error": {
+      "main": [
+        [
+          {
+            "node": "Write Failure Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true
+  },
+  "pinData": {}
+}

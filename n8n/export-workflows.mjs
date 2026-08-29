@@ -28,10 +28,12 @@
  * client-supplied is_full_pledge flag - so publishing it verbatim would hand
  * anyone a working request for restricted Family Council content.
  *
- * Every rule below is STRUCTURAL: it matches by node type or field name, or by
- * a generic URL shape. None of them contain the secret itself. An earlier draft
- * listed the real webhook paths as find-and-replace patterns, which would have
- * published in this file exactly what the export was removing.
+ * Nothing secret is written in this file. Webhook paths and the Drive folder id
+ * are DERIVED from the fetched workflows, then removed wherever they appear -
+ * including inside sticky-note prose, which a URL-shaped rule alone misses. An
+ * earlier version made both mistakes: it listed the real paths as constants,
+ * and it only matched them in URL position, so a note describing the path
+ * leaked straight through.
  *
  * Redaction is a mitigation, not a fix. The fix is to authenticate those
  * webhooks and stop trusting the client's access claim.
@@ -58,74 +60,74 @@ const N8N_API_KEY = process.env.N8N_API_KEY || '';
 const WORKFLOWS = [
   { id: 'ndYNEP0gRDdzT6YE', file: 'chat-rag.json' },
   { id: 'tVGDoCsC4yMZfwqm', file: 'kb-file-processor.json' },
-  { id: 'dlx6qE4bQxWEzVtw', file: 'kb-ingestion.json' },
+  { id: 'dlx6qE4bQxWEzVtw', file: 'kb-ingestion-google-drive.json' },
   { id: 'PMIciYjF180QncJh', file: 'kb-progress-email.json' },
   { id: '8MeUG6bYrnPrmZLv', file: 'kb-error-logger.json' },
   { id: 'tS79gxfqOjaLeLQX', file: 'kb-queue-status.json' },
 ];
 
 /** Field names whose values are identifiers or paths we do not publish. */
-const REDACT_FIELDS = new Set(['webhookId', 'folderId', 'projectId', 'path']);
+const REDACT_FIELDS = new Set(['webhookId', 'folderId', 'path']);
 
-/** Node types whose `path` parameter is a live, unauthenticated endpoint. */
-const WEBHOOK_NODE_TYPES = new Set(['n8n-nodes-base.webhook']);
-
-function escapeRegExp(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+const HOST_RE = /https?:[/][/][a-z0-9-]+[.][a-z0-9-]+[.]azurewebsites[.]net/gi;
+const GCP_RE = /family-council-[0-9]+/g;
 
 /**
- * String rules. The host comes from the environment at runtime, so the real
- * hostname is never written down here. The webhook rule matches the SHAPE of an
- * n8n webhook URL and replaces whatever path follows, without naming any path.
+ * Collect the values that must not be published, from the workflows themselves.
+ * Prefix variants are included because the notes reference the older v1 webhook
+ * path as well ("...-v2" -> "...").
  */
-function buildStringRules() {
-  const rules = [
-    [/(\/webhook(?:-test)?\/)[A-Za-z0-9._~-]+/g, '$1WEBHOOK_PATH_REDACTED'],
-  ];
-  if (N8N_URL) {
-    rules.unshift([new RegExp(escapeRegExp(N8N_URL), 'gi'), 'https://N8N_HOST_REDACTED']);
+function collectSecrets(workflows) {
+  const secrets = new Set();
+  for (const wf of workflows) {
+    for (const node of wf.nodes || []) {
+      if (node.type === 'n8n-nodes-base.webhook' && typeof node.parameters?.path === 'string') {
+        const p = node.parameters.path;
+        secrets.add(p);
+        const stripped = p.replace(/-v[0-9]+$/, '');
+        if (stripped !== p) secrets.add(stripped);
+      }
+      for (const a of node.parameters?.assignments?.assignments || []) {
+        if (a.name === 'folderId' && typeof a.value === 'string' && a.value.length > 20) {
+          secrets.add(a.value);
+        }
+      }
+    }
   }
-  return rules;
+  // longest first, so "x-v2" is replaced before "x"
+  return [...secrets].sort((a, b) => b.length - a.length);
 }
 
-const STRING_RULES = buildStringRules();
-
-function redactString(value) {
-  let out = value;
-  for (const [pattern, replacement] of STRING_RULES) out = out.replace(pattern, replacement);
+function redactString(value, secrets) {
+  let out = value
+    .replace(HOST_RE, 'https://N8N_HOST_REDACTED')
+    .replace(GCP_RE, 'GCP_PROJECT_REDACTED');
+  // Plain string replacement, not regex: no escaping to get wrong.
+  for (const secret of secrets) out = out.split(secret).join('REDACTED');
   return out;
 }
 
 /**
- * Walk the workflow and redact in place.
- *
  * `credentials` keeps its NAME but loses its id: the name is what a human needs
  * in order to reattach the right credential after an import, and it is not a
  * secret. n8n never includes credential values in an export, but the ids are
  * still instance-specific and worth withholding.
  */
-function redact(value, keyName, insideCredentials = false) {
+function redact(value, key, secrets, insideCredentials = false) {
   if (typeof value === 'string') {
-    if (insideCredentials && keyName === 'id') return 'REDACTED';
-    if (REDACT_FIELDS.has(keyName)) return 'REDACTED';
-    return redactString(value);
+    if (insideCredentials && key === 'id') return 'REDACTED';
+    if (REDACT_FIELDS.has(key)) return 'REDACTED';
+    return redactString(value, secrets);
   }
-  if (Array.isArray(value)) return value.map((v) => redact(v, keyName, insideCredentials));
+  if (Array.isArray(value)) return value.map((v) => redact(v, key, secrets, insideCredentials));
   if (value && typeof value === 'object') {
     const out = {};
     for (const [k, v] of Object.entries(value)) {
-      out[k] = redact(v, k, insideCredentials || k === 'credentials');
+      out[k] = redact(v, k, secrets, insideCredentials || k === 'credentials');
     }
     return out;
   }
   return value;
-}
-
-/** Blank the `path` on any webhook node, whatever it happens to be called. */
-function redactWebhookPaths(node) {
-  if (!WEBHOOK_NODE_TYPES.has(node.type)) return node;
-  return { ...node, parameters: { ...node.parameters, path: 'WEBHOOK_PATH_REDACTED' } };
 }
 
 /**
@@ -136,9 +138,7 @@ function redactWebhookPaths(node) {
 function normalise(workflow) {
   return {
     name: workflow.name,
-    active: workflow.active,
-    settings: workflow.settings ?? {},
-    nodes: (workflow.nodes ?? []).map((n) => redactWebhookPaths({
+    nodes: (workflow.nodes ?? []).map((n) => ({
       name: n.name,
       type: n.type,
       typeVersion: n.typeVersion,
@@ -155,21 +155,22 @@ function normalise(workflow) {
       ...(n.executeOnce ? { executeOnce: n.executeOnce } : {}),
     })),
     connections: workflow.connections ?? {},
+    settings: workflow.settings ?? {},
+    pinData: {},
   };
 }
 
 /**
- * Last line of defence. If the host somehow survived - N8N_URL spelled
- * differently from how the workflow embeds it, say - fail loudly rather than
- * write a file that leaks it.
+ * Last line of defence: fail loudly rather than write a file that leaks.
  */
-function assertClean(text, file) {
-  const leaks = [];
-  if (/https?:\/\/[a-z0-9-]+\.[a-z0-9-]+\.azurewebsites\.net/i.test(text)) leaks.push('n8n host');
-  if (/\/webhook(?:-test)?\/(?!WEBHOOK_PATH_REDACTED)[A-Za-z0-9._~-]+/.test(text)) leaks.push('webhook path');
-  if (leaks.length) {
-    throw new Error(`refusing to write ${file}: ${leaks.join(', ')} still present. ` +
-      'Check N8N_URL matches the host the workflows actually embed.');
+function assertClean(text, file, secrets) {
+  if (/azurewebsites/i.test(text)) {
+    throw new Error(`refusing to write ${file}: n8n host still present.`);
+  }
+  for (const secret of secrets) {
+    if (text.includes(secret)) {
+      throw new Error(`refusing to write ${file}: "${secret}" still present.`);
+    }
   }
 }
 
@@ -189,29 +190,33 @@ async function main() {
   }
 
   await mkdir(OUT_DIR, { recursive: true });
-  let failed = 0;
 
+  // Fetch everything first: a note in one workflow can name another's webhook
+  // path, so the secret list has to be complete before anything is written.
+  const fetched = [];
   for (const { id, file } of WORKFLOWS) {
     try {
-      const raw = await fetchWorkflow(id);
-      const clean = redact(normalise(raw));
-      // Trailing newline and 2-space indent so git diffs stay line-oriented.
-      const text = JSON.stringify(clean, null, 2) + '\n';
-      assertClean(text, file);
-      await writeFile(join(OUT_DIR, file), text, 'utf8');
-      console.log(`exported ${file}  (${clean.nodes.length} nodes)`);
+      fetched.push({ file, workflow: await fetchWorkflow(id) });
     } catch (err) {
-      failed++;
       console.error(`FAILED ${file}: ${err.message}`);
+      console.error('\nAborting without writing. A missing workflow looks identical\n' +
+        'to a deleted one in the diff.');
+      process.exit(1);
     }
   }
 
-  // A partial export committed as if complete would read as "nodes deleted".
-  if (failed) {
-    console.error(`\n${failed} workflow(s) failed. Do NOT commit this run: a missing\n` +
-      'workflow looks identical to a deleted one in the diff.');
-    process.exit(1);
+  const secrets = collectSecrets(fetched.map((f) => f.workflow));
+  console.log(`redacting ${secrets.length} derived value(s)`);
+
+  for (const { file, workflow } of fetched) {
+    const clean = redact(normalise(workflow), undefined, secrets);
+    // Trailing newline and 2-space indent so git diffs stay line-oriented.
+    const text = JSON.stringify(clean, null, 2) + '\n';
+    assertClean(text, file, secrets);
+    await writeFile(join(OUT_DIR, file), text, 'utf8');
+    console.log(`exported ${file}  (${clean.nodes.length} nodes)`);
   }
+
   console.log('\nDone. Review the diff before committing - an unexpected change is the signal.');
 }
 

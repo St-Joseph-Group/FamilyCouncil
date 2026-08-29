@@ -1,0 +1,461 @@
+{
+  "name": "Family Council v2 - KB Ingestion (Google Drive)",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "0057d53e-7357-4931-bce6-30334ce9652b",
+      "name": "Run KB Ingestion",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1600,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cfg1",
+              "name": "folderId",
+              "value": "REDACTED",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "86bf1667-c75f-4046-8878-56e3d28b90b7",
+      "name": "KB Config",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -1376,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## KB Crawler (queue filler)\n\nCrawls Google Drive at ALL folder depths and syncs the file list into fc_kb_queue. New or modified files are marked status=pending. Runs every 15 minutes. Nested folders are included: Absorb Level pushes every subfolder it finds back onto pendingFolders and the loop continues until none are left.\n\nThe heavy work (download, convert, OCR, embed) is done by \"Family Council v2 - KB File Processor\": every 15 minutes, ONE file per run.\n\nHOW LONG UNTIL A NEW FILE IS ANSWERABLE\n- discovery: up to 15 minutes (this crawl)\n- processing: one file per 15-minute run\n- so a single new file is usually live in 15-30 minutes, and a folder of 10 files takes around 2.5 hours\n\nThat pace is deliberate. The Vertex embedding quota is 5 requests per minute and Google will not raise it for this project. Embedding is throttled to 3 chunks per 65s and a SQL mutex stops a second file being claimed while one is in flight. Going faster reproduces the August 429 storm, which also takes the CHATBOT down, because chat questions embed through the same quota.\n\nACCESS CONTROL: a file is tagged access=full_pledge when its FOLDER PATH contains \"full pledge\" (case-insensitive; - and _ count as spaces). The file name is NOT considered. Everything else is public. Subfolders inherit, because the path is the full crawled path.\n\nWHAT A RE-CRAWL DETECTS\n- new file             -> queued\n- edited file          -> modifiedTime changes -> re-queued\n- file moved folder    -> parent_folder changes -> re-queued (a move does NOT change modifiedTime, but it can change the access tag)\n- folder renamed       -> same path check re-queues everything inside\n- file gone from Drive -> Reconcile Deletions removes its queue row, chunks and images\n\n!! DO NOT raise the batch size in \"Crawl Next Level\" above 1 !!\nIt used to splice 40 folders into one \"'a' in parents or 'b' in parents ...\" query. Google Drive answers those batched queries with an EMPTY list and NO error, so the workflow reported success while silently seeing only the KB root. Subfolders were invisible from 8 Jul to 7 Aug 2026. Bisected: 40 -> 0 files, 15 -> 0, 5 -> 0, 1 -> 474. One folder per query is the only value proven to work.\n\nRECONCILE DELETIONS is gated on purpose. It does nothing if the crawl returned zero files, or if more than 10% of the library (min 20 files) would be removed in one pass - that pattern is far more likely to be a broken crawl than a real mass deletion, and without the gate the bug above would have wiped the whole knowledge base. A blocked run reports reconciled=false and missingFromDrive=N in Crawl Summary; check the Drive folder before clearing it by hand.\n\nA full crawl is ~63 Drive calls, ~34s. Execution timeout is 300s. Watch the run time if the folder count grows a lot.\n\nDO NOT edit/save this workflow from an old browser tab - it overwrites the current version. Always refresh first. This has already cost the chat workflow its access-control nodes once, on 20 Aug 2026, unnoticed for eight days.",
+        "height": 720,
+        "width": 500,
+        "color": 4
+      },
+      "id": "7571a344-a6a7-47de-87f2-c654034df80e",
+      "name": "Sticky Note 05eed7b9",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1712,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "CREATE EXTENSION IF NOT EXISTS vector;\nCREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";\nCREATE TABLE IF NOT EXISTS fc_kb_vectors (\n  id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),\n  \"text\" text,\n  metadata jsonb,\n  embedding vector(768)\n);\nCREATE TABLE IF NOT EXISTS fc_kb_queue (\n  file_id text PRIMARY KEY,\n  file_name text,\n  mime_type text,\n  parent_folder text,\n  modified_time text,\n  status text DEFAULT 'pending',\n  updated_at timestamptz DEFAULT now()\n);\n-- Page images from the OCR path in the KB File Processor. The composite key\n-- is what \"Insert KB Image\" targets with ON CONFLICT (file_id, page).\nCREATE TABLE IF NOT EXISTS fc_kb_images (\n  file_id      text    NOT NULL,\n  page         integer NOT NULL DEFAULT 1,\n  file_name    text,\n  mime_type    text,\n  access       text    DEFAULT 'public',\n  image_base64 text,\n  created_at   timestamptz DEFAULT now(),\n  PRIMARY KEY (file_id, page)\n);\n-- Single-row latch behind the \"ingestion finished\" email in the KB File\n-- Processor. Without it that workflow would mail every 5 minutes for as long\n-- as the queue stayed empty. Kept here so a rebuilt database is complete.\nCREATE TABLE IF NOT EXISTS fc_kb_notify_state (\n  id         boolean PRIMARY KEY DEFAULT true CHECK (id),\n  idle       boolean NOT NULL DEFAULT false,\n  updated_at timestamptz NOT NULL DEFAULT now()\n);\nINSERT INTO fc_kb_notify_state (id, idle) VALUES (true, false)\nON CONFLICT (id) DO NOTHING;",
+        "options": {}
+      },
+      "id": "4659bb82-1c10-4b9d-bd6f-ca38f4eb4727",
+      "name": "Ensure KB Schema",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -1152,
+        496
+      ],
+      "alwaysOutputData": true,
+      "executeOnce": true,
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "2d40ea84-6c53-48c6-8372-8d36e8b581eb",
+      "name": "Refresh Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1600,
+        592
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const folderId = $('KB Config').first().json.folderId;\nconst folderNames = {};\nfolderNames[folderId] = '';\nreturn [{ json: { pendingFolders: [ { id: folderId, name: '' } ], files: [], folderNames } }];"
+      },
+      "id": "e77b9080-b07c-4001-a872-763fd4ac0f28",
+      "name": "Init Crawl",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -928,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const state = JSON.parse(JSON.stringify($json));\nconst batch = state.pendingFolders.splice(0, 1);\nfor (const f of batch) { state.folderNames[f.id] = f.name || ''; }\nstate.driveQuery = '(' + batch.map(f => \"'\" + f.id + \"' in parents\").join(' or ') + ') and trashed = false';\nreturn [{ json: state }];"
+      },
+      "id": "94725e89-2512-432f-891b-1114f76b183c",
+      "name": "Crawl Next Level",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -704,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "fileFolder",
+        "searchMethod": "query",
+        "queryString": "={{ $json.driveQuery }}",
+        "returnAll": true,
+        "filter": {},
+        "options": {
+          "fields": [
+            "*"
+          ]
+        }
+      },
+      "id": "e4e7c5c3-8303-49d4-9fe4-9ab7725cf975",
+      "name": "List Folder Children",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -480,
+        432
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "REDACTED",
+          "name": "Google Drive Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const state = JSON.parse(JSON.stringify($('Crawl Next Level').first().json));\nconst FOLDER_MIME = 'application/vnd.google-apps.folder';\nfor (const it of $input.all()) {\n  const j = it.json || {};\n  if (!j.id) continue;\n  const pid = Array.isArray(j.parents) && j.parents.length ? j.parents[0] : null;\n  const parentPath = (pid && state.folderNames[pid] !== undefined) ? state.folderNames[pid] : '';\n  if (j.mimeType === FOLDER_MIME) {\n    const path = parentPath ? parentPath + ' / ' + (j.name || '') : (j.name || '');\n    state.pendingFolders.push({ id: j.id, name: path });\n  } else {\n    state.files.push({ fileId: j.id, fileName: j.name || '', mimeType: j.mimeType || '', modifiedTime: j.modifiedTime || '', parentFolder: parentPath });\n  }\n}\ndelete state.driveQuery;\nreturn [{ json: state }];"
+      },
+      "id": "64896e45-0cdb-4e51-beb2-772d1c52a88f",
+      "name": "Absorb Level",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -256,
+        432
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "mf1",
+              "leftValue": "={{ $json.pendingFolders.length }}",
+              "operator": {
+                "operation": "gt",
+                "type": "number"
+              },
+              "rightValue": 0
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "32af1f9b-d76d-49cb-bf0b-308c34434685",
+      "name": "More Folders To Crawl?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -32,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const files = $json.files || [];\nreturn [{ json: { payload: JSON.stringify(files), fileCount: files.length } }];"
+      },
+      "id": "0d6206ff-946c-4ed3-8e32-d6a91518c5b2",
+      "name": "Prepare Queue Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        192,
+        496
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO fc_kb_queue (file_id, file_name, mime_type, parent_folder, modified_time, status)\nSELECT r.\"fileId\", r.\"fileName\", r.\"mimeType\", r.\"parentFolder\", r.\"modifiedTime\", 'pending'\nFROM jsonb_to_recordset($1::jsonb) AS r(\"fileId\" text, \"fileName\" text, \"mimeType\" text, \"parentFolder\" text, \"modifiedTime\" text)\nON CONFLICT (file_id) DO UPDATE SET\n  file_name = EXCLUDED.file_name,\n  mime_type = EXCLUDED.mime_type,\n  parent_folder = EXCLUDED.parent_folder,\n  modified_time = EXCLUDED.modified_time,\n  -- Re-queue when the content changed OR the file moved to a different folder.\n  -- Access is derived from the folder name, and a Drive move does not touch\n  -- modifiedTime, so without the parent_folder check a file moved into or out of\n  -- a \"Full Pledge\" folder would keep its old access tag on every chunk forever.\n  status = CASE\n    WHEN fc_kb_queue.modified_time  IS DISTINCT FROM EXCLUDED.modified_time\n      OR fc_kb_queue.parent_folder  IS DISTINCT FROM EXCLUDED.parent_folder\n    THEN 'pending' ELSE fc_kb_queue.status END,\n  updated_at = CASE\n    WHEN fc_kb_queue.modified_time  IS DISTINCT FROM EXCLUDED.modified_time\n      OR fc_kb_queue.parent_folder  IS DISTINCT FROM EXCLUDED.parent_folder\n    THEN now() ELSE fc_kb_queue.updated_at END;",
+        "options": {
+          "queryReplacement": "={{ [ $json.payload ] }}"
+        }
+      },
+      "id": "ff76a971-0655-4aec-8360-924259ba8f9a",
+      "name": "Upsert Queue",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        416,
+        496
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "cs1",
+              "name": "message",
+              "type": "string",
+              "value": "Crawl complete - file queue updated"
+            },
+            {
+              "id": "cs2",
+              "name": "filesFound",
+              "type": "string",
+              "value": "={{ $('Prepare Queue Payload').first().json.fileCount }}"
+            },
+            {
+              "id": "cs3",
+              "name": "missingFromDrive",
+              "type": "string",
+              "value": "={{ $json.missing_count }}"
+            },
+            {
+              "id": "cs4",
+              "name": "reconciled",
+              "type": "string",
+              "value": "={{ $json.may_delete }}"
+            },
+            {
+              "id": "cs5",
+              "name": "filesRemoved",
+              "type": "string",
+              "value": "={{ $json.queue_rows_deleted }}"
+            },
+            {
+              "id": "cs6",
+              "name": "chunksRemoved",
+              "type": "string",
+              "value": "={{ $json.chunks_deleted }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "9f03d2da-6362-45a9-b4bf-4252f61587fc",
+      "name": "Crawl Summary",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        864,
+        496
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Remove files that have disappeared from Google Drive.\n-- The crawl payload is the full list of files currently under the KB root, so\n-- anything still in the queue that is absent from it has been deleted, trashed\n-- or moved out of the knowledge base, and must stop being answerable.\nWITH seen AS (\n  SELECT DISTINCT r.\"fileId\" AS file_id\n  FROM jsonb_to_recordset($1::jsonb) AS r(\"fileId\" text)\n  WHERE r.\"fileId\" IS NOT NULL\n),\nstats AS (\n  SELECT\n    (SELECT count(*) FROM seen)        AS seen_count,\n    (SELECT count(*) FROM fc_kb_queue) AS queue_count,\n    (SELECT count(*) FROM fc_kb_queue q\n       WHERE NOT EXISTS (SELECT 1 FROM seen s WHERE s.file_id = q.file_id)) AS missing_count\n),\n-- Safety gate. A crawl returning nothing, or suddenly losing a large slice of\n-- the library, is far likelier to be a broken crawl than a real mass deletion:\n-- the batched Drive query silently returned 2 of 474 files for a month. Without\n-- this, one such run would erase the entire knowledge base. Oversized runs are\n-- reported and left alone for a human to confirm.\ngate AS (\n  SELECT s.*,\n         (s.seen_count > 0\n          AND s.missing_count <= greatest(20, (s.queue_count * 0.10)::int)) AS may_delete\n  FROM stats s\n),\ndel_vectors AS (\n  DELETE FROM fc_kb_vectors v\n  WHERE (SELECT may_delete FROM gate)\n    AND v.metadata->>'fileId' IS NOT NULL\n    AND NOT EXISTS (SELECT 1 FROM seen s WHERE s.file_id = v.metadata->>'fileId')\n  RETURNING 1\n),\ndel_images AS (\n  DELETE FROM fc_kb_images i\n  WHERE (SELECT may_delete FROM gate)\n    AND i.file_id IS NOT NULL\n    AND NOT EXISTS (SELECT 1 FROM seen s WHERE s.file_id = i.file_id)\n  RETURNING 1\n),\ndel_queue AS (\n  DELETE FROM fc_kb_queue q\n  WHERE (SELECT may_delete FROM gate)\n    AND NOT EXISTS (SELECT 1 FROM seen s WHERE s.file_id = q.file_id)\n  RETURNING 1\n)\nSELECT g.seen_count, g.queue_count, g.missing_count, g.may_delete,\n       (SELECT count(*) FROM del_queue)   AS queue_rows_deleted,\n       (SELECT count(*) FROM del_vectors) AS chunks_deleted,\n       (SELECT count(*) FROM del_images)  AS images_deleted\nFROM gate g;",
+        "options": {
+          "queryReplacement": "={{ [ $('Prepare Queue Payload').first().json.payload ] }}"
+        }
+      },
+      "id": "26ffe83f-d446-46ba-af77-29febb8b7368",
+      "name": "Reconcile Deletions",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        640,
+        496
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Run KB Ingestion": {
+      "main": [
+        [
+          {
+            "node": "KB Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "KB Config": {
+      "main": [
+        [
+          {
+            "node": "Ensure KB Schema",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ensure KB Schema": {
+      "main": [
+        [
+          {
+            "node": "Init Crawl",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Init Crawl": {
+      "main": [
+        [
+          {
+            "node": "Crawl Next Level",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Crawl Next Level": {
+      "main": [
+        [
+          {
+            "node": "List Folder Children",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Folder Children": {
+      "main": [
+        [
+          {
+            "node": "Absorb Level",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Absorb Level": {
+      "main": [
+        [
+          {
+            "node": "More Folders To Crawl?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "More Folders To Crawl?": {
+      "main": [
+        [
+          {
+            "node": "Crawl Next Level",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Queue Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Queue Payload": {
+      "main": [
+        [
+          {
+            "node": "Upsert Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refresh Every 15 Minutes": {
+      "main": [
+        [
+          {
+            "node": "KB Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Queue": {
+      "main": [
+        [
+          {
+            "node": "Reconcile Deletions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reconcile Deletions": {
+      "main": [
+        [
+          {
+            "node": "Crawl Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true,
+    "binaryMode": "separate",
+    "executionTimeout": 300
+  },
+  "pinData": {}
+}

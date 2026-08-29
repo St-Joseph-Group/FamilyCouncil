@@ -1,0 +1,2019 @@
+{
+  "name": "Family Council v2 - KB File Processor",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "1d56158d-f598-49b1-91b1-c0012ca195f0",
+      "name": "Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1408,
+        1088
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- One file at a time, and only when nothing else is in flight.\n--\n-- The Vertex quota is 5 embedding requests per minute (textembedding-gecko,\n-- us-central1) and Google will not raise it for this project. Embedding is\n-- therefore throttled inside the run by \"Embed Batch Loop\" - 3 chunks, wait 65s.\n-- Two runs overlapping would double that rate and start failing with 429 again,\n-- so the NOT EXISTS below acts as a mutex: claim nothing while another file is\n-- still being processed.\n--\n-- The stale window is 3 hours, not 30 minutes, because a large file now\n-- legitimately takes hours to embed at this rate.\nUPDATE fc_kb_queue SET status = 'processing', updated_at = now()\nWHERE file_id IN (\n  SELECT file_id FROM fc_kb_queue\n  WHERE (status = 'pending'\n         OR (status = 'processing' AND updated_at < now() - interval '3 hours'))\n    AND NOT EXISTS (\n      SELECT 1 FROM fc_kb_queue busy\n      WHERE busy.status = 'processing'\n        AND busy.updated_at >= now() - interval '3 hours'\n    )\n  ORDER BY updated_at ASC\n  LIMIT 1\n)\nRETURNING file_id, file_name, mime_type, parent_folder;",
+        "options": {}
+      },
+      "id": "cab26747-224f-4d77-8168-722578f036a2",
+      "name": "Claim Pending Files",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -1184,
+        1184
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "3ff9b9c3-6c77-4530-bc45-23597c5af5fb",
+      "name": "Run Processor Now",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1408,
+        1280
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "af1",
+              "leftValue": "={{ $json.file_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "3fded68a-dcdf-456a-9504-ec22330c5bc2",
+      "name": "Any Files Claimed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -960,
+        1184
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "pf1",
+              "name": "message",
+              "value": "Batch processed",
+              "type": "string"
+            },
+            {
+              "id": "pf2",
+              "name": "finishedAt",
+              "value": "={{ $now.toISO() }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "7df860d5-f84f-4851-9a4e-f0f27129ed5d",
+      "name": "Processor Finished",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -512,
+        -48
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "c1",
+              "name": "fileId",
+              "value": "={{ $json.file_id }}",
+              "type": "string"
+            },
+            {
+              "id": "c2",
+              "name": "fileName",
+              "value": "={{ $json.file_name }}",
+              "type": "string"
+            },
+            {
+              "id": "c3",
+              "name": "parentFolder",
+              "value": "={{ $json.parent_folder }}",
+              "type": "string"
+            },
+            {
+              "id": "c5",
+              "name": "access",
+              "value": "={{ (($json.parent_folder || '').toLowerCase().replace(/[-_]/g, ' ').includes('full pledge')) ? 'full_pledge' : 'public' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "ae8c585e-2bac-4947-b02b-ee926b08f570",
+      "name": "Current File",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -512,
+        752
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.fileId }}"
+        },
+        "options": {
+          "binaryPropertyName": "data",
+          "googleFileConversion": {
+            "conversion": {
+              "docsToFormat": "application/pdf",
+              "slidesToFormat": "application/pdf",
+              "sheetsToFormat": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            }
+          }
+        }
+      },
+      "id": "e03924ed-9342-4da1-a5fc-61b8109cb652",
+      "name": "Download KB File",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -288,
+        752
+      ],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "REDACTED",
+          "name": "Google Drive Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "r1",
+                    "leftValue": "={{ $binary.data.mimeType }}",
+                    "operator": {
+                      "operation": "equals",
+                      "type": "string"
+                    },
+                    "rightValue": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  }
+                ],
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                }
+              }
+            },
+            {
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "r2",
+                    "leftValue": "={{ $binary.data.mimeType }}",
+                    "operator": {
+                      "operation": "equals",
+                      "type": "string"
+                    },
+                    "rightValue": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  }
+                ],
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                }
+              }
+            },
+            {
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "r3",
+                    "leftValue": "={{ $binary.data.mimeType }}",
+                    "operator": {
+                      "operation": "equals",
+                      "type": "string"
+                    },
+                    "rightValue": "application/vnd.ms-excel"
+                  }
+                ],
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                }
+              }
+            },
+            {
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "r4",
+                    "leftValue": "={{ $binary.data.mimeType }}",
+                    "operator": {
+                      "operation": "equals",
+                      "type": "string"
+                    },
+                    "rightValue": "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                  }
+                ],
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                }
+              }
+            },
+            {
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "r5",
+                    "leftValue": "={{ $binary.data.mimeType }}",
+                    "operator": {
+                      "operation": "equals",
+                      "type": "string"
+                    },
+                    "rightValue": "application/pdf"
+                  }
+                ],
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                }
+              }
+            },
+            {
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "r6",
+                    "leftValue": "={{ $binary.data.mimeType }}",
+                    "operator": {
+                      "operation": "equals",
+                      "type": "string"
+                    },
+                    "rightValue": "application/msword"
+                  }
+                ],
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                }
+              }
+            },
+            {
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "r7",
+                    "leftValue": "={{ $binary.data.mimeType }}",
+                    "operator": {
+                      "operation": "equals",
+                      "type": "string"
+                    },
+                    "rightValue": "image/png"
+                  }
+                ],
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                }
+              }
+            },
+            {
+              "conditions": {
+                "combinator": "and",
+                "conditions": [
+                  {
+                    "id": "r8",
+                    "leftValue": "={{ $binary.data.mimeType }}",
+                    "operator": {
+                      "operation": "equals",
+                      "type": "string"
+                    },
+                    "rightValue": "image/jpeg"
+                  }
+                ],
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                }
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "unsupported"
+        }
+      },
+      "id": "25efeef1-0023-4852-a33c-ad1bd47ef3f0",
+      "name": "Route by File Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        -64,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://v2.convertapi.com/convert/docx/to/pdf",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/octet-stream"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "File",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "d213ed3b-6177-4f45-8110-387c88066d0d",
+      "name": "ConvertAPI docx to PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        160,
+        336
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "REDACTED",
+          "name": "ConvertAPI - Family Council (convert to PDF)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nif (item.binary && item.binary.data) {\n  const meta = $('Current File').first().json;\n  const base = (meta.fileName || 'document').replace(/\\.[^.]+$/, '');\n  item.binary.data.fileName = base + '.pdf';\n  item.binary.data.fileExtension = 'pdf';\n  item.binary.data.mimeType = 'application/pdf';\n}\nreturn item;"
+      },
+      "id": "511fd29d-151e-435e-a7d3-8a5e95be8cab",
+      "name": "Force PDF Metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        384,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://v2.convertapi.com/convert/xlsx/to/pdf",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/octet-stream"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "File",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "812d4c1c-4822-4f0f-aca8-de24fa8f4904",
+      "name": "ConvertAPI xlsx to PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        160,
+        528
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "REDACTED",
+          "name": "ConvertAPI - Family Council (convert to PDF)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://v2.convertapi.com/convert/xls/to/pdf",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/octet-stream"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "File",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "60d32c5c-15b3-4758-8301-e6a6e9e87ef7",
+      "name": "ConvertAPI xls to PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        160,
+        816
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "REDACTED",
+          "name": "ConvertAPI - Family Council (convert to PDF)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://v2.convertapi.com/convert/pptx/to/pdf",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/octet-stream"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "File",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "c569bbb9-4d92-4aef-87ed-ceec73dc8fc0",
+      "name": "ConvertAPI pptx to PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        160,
+        1008
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "REDACTED",
+          "name": "ConvertAPI - Family Council (convert to PDF)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE fc_kb_queue SET status = 'skipped', updated_at = now() WHERE file_id = $1;",
+        "options": {
+          "queryReplacement": "={{ [ $('Current File').first().json.fileId ] }}"
+        }
+      },
+      "id": "a3945a5b-6c5f-4b28-a647-2fd925480201",
+      "name": "Mark File Skipped",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        160,
+        1200
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "229d9a52-5bfd-4991-b696-a09523d79585",
+      "name": "Process One File Loop",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -736,
+        1088
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "qe1",
+              "name": "message",
+              "value": "No pending files in the KB queue",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "6b714942-29e7-4db5-bcdb-1d82e1fa0b6a",
+      "name": "Queue Empty",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -736,
+        1280
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "options": {}
+      },
+      "id": "6c62093f-d5ea-4455-95b6-caa98c7ffaf5",
+      "name": "Extract PDF Text",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        608,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const meta = $('Current File').first().json;\nconst text = $input.all().map(i => (i.json.text || '')).join('\\n').trim();\nreturn [{ json: { text, fileId: meta.fileId, fileName: meta.fileName, access: meta.access || 'public' } }];"
+      },
+      "id": "f036ab01-c032-4ca7-971c-cc9b896fa89f",
+      "name": "Normalize Extracted Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        832,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "DELETE FROM fc_kb_vectors WHERE metadata->>'fileId' = $1;",
+        "options": {
+          "queryReplacement": "={{ [ $json.fileId ] }}"
+        }
+      },
+      "id": "52bcaf9c-cf45-42be-80f3-91efc502f38e",
+      "name": "Delete Old Chunks",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1056,
+        560
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const src = $('Normalize Extracted Text').first().json;\nconst text = src.text || '';\n\n// 2500 rather than 1000: every chunk is one embedding call, and the vector\n// store embeds a whole file in one burst. Large documents generated enough\n// calls to trip the Vertex per-minute limit by themselves, which is why\n// slowing the FILE rate never fixed it. Bigger chunks cut calls per file by\n// about 60%. Retrieval gets slightly less precise in exchange.\nconst chunkSize = 2500;\nconst overlap = 300;\nconst output = [];\nif (!text.trim()) {\n  // Scanned/image-only PDF with no text layer - emit a marker so the run continues and the file gets skipped\n  return [{ json: { noText: true, fileId: src.fileId, fileName: src.fileName } }];\n}\n\n// Access is decided by the Drive folder name in 'Current File'. The document's\n// own text is deliberately not consulted: a file is restricted because of where\n// it lives, not because of what it says.\nconst access = src.access || 'public';\n\nlet start = 0;\nlet chunkIndex = 1;\nwhile (start < text.length) {\n  let end = start + chunkSize;\n  if (end < text.length) {\n    const lastSpace = text.lastIndexOf(' ', end);\n    // Back off to a word boundary, but never more than halfway, so a sparse\n    // stretch of text cannot collapse a chunk to almost nothing.\n    if (lastSpace > start + 1250) { end = lastSpace; }\n  }\n  const chunk = text.slice(start, end).trim();\n  if (chunk.length > 0) {\n    output.push({ json: { text: chunk, chunkIndex, fileId: src.fileId, fileName: src.fileName, access } });\n  }\n  if (end >= text.length) { break; }\n  start = end - overlap;\n  chunkIndex++;\n}\nif (output.length === 0) {\n  return [{ json: { noText: true, fileId: src.fileId, fileName: src.fileName } }];\n}\nreturn output;"
+      },
+      "id": "b9db6829-4488-4979-bacc-0426df8f43c9",
+      "name": "Chunk KB Text",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1280,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "insert",
+        "tableName": "fc_kb_vectors",
+        "options": {}
+      },
+      "id": "0b2852e0-f690-4d8b-848a-d32f0eb00b6b",
+      "name": "Store KB Chunks",
+      "type": "@n8n/n8n-nodes-langchain.vectorStorePGVector",
+      "typeVersion": 1.3,
+      "position": [
+        4320,
+        560
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "GCP_PROJECT_REDACTED",
+          "mode": "id"
+        }
+      },
+      "id": "f3507468-2383-46fd-963c-3cd6cfb95062",
+      "name": "Embeddings Google Vertex",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsGoogleVertex",
+      "typeVersion": 1,
+      "position": [
+        4336,
+        784
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "googleApi": {
+          "id": "REDACTED",
+          "name": "Google Service Account Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsonMode": "expressionData",
+        "jsonData": "={{ $json.text }}",
+        "options": {
+          "metadata": {
+            "metadataValues": [
+              {
+                "name": "fileId",
+                "value": "={{ $json.fileId }}"
+              },
+              {
+                "name": "fileName",
+                "value": "={{ $json.fileName }}"
+              },
+              {
+                "name": "chunkIndex",
+                "value": "={{ $json.chunkIndex }}"
+              },
+              {
+                "name": "access",
+                "value": "={{ $json.access }}"
+              }
+            ]
+          }
+        },
+        "textSplittingMode": "custom"
+      },
+      "id": "44d3d8bc-dd32-4b40-a142-b2f1f1c88d11",
+      "name": "KB Document Loader",
+      "type": "@n8n/n8n-nodes-langchain.documentDefaultDataLoader",
+      "typeVersion": 1.1,
+      "position": [
+        4464,
+        784
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE fc_kb_queue SET status = 'done', updated_at = now() WHERE file_id = $1;",
+        "options": {
+          "queryReplacement": "={{ [ $('Current File').first().json.fileId ] }}"
+        }
+      },
+      "id": "373c2848-4b88-422a-b0c1-190c52f9a7f1",
+      "name": "Mark File Done",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        4672,
+        1264
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## KB File Processor\n\nRuns every 15 minutes and claims ONE pending file from fc_kb_queue, then: download from Drive, convert to PDF if needed (ConvertAPI), extract text, delete the file's old chunks, chunk, embed (Vertex text-embedding-005), store in fc_kb_vectors, mark the queue row done.\n\n!! DO NOT raise the rate without checking for 429s !!\nThis was 3 files every 5 minutes. On 7 Aug a full re-index pushed all 475 files through at once, exhausted the Google Vertex embedding quota, and \"Embeddings Google Vertex\" began failing with HTTP 429 after ~120s of retries. Failed files stayed in 'processing', were re-claimed after 30 minutes and failed again, pinning the quota for two days.\n\nThe damage is not limited to ingestion: the CHAT workflow embeds every user question through the same Vertex API, so a saturated quota takes the chatbot down too - questions hang for 120s and return \"Message delivery is being retried\". If the chatbot starts timing out, look here first.\n\nTo go faster, raise the Vertex embedding quota in Google Cloud rather than the rate here.\n\n### Queue statuses\n- done - text extracted and embedded\n- skipped - unsupported type (zip, video)\n- no_text - NOTHING searchable came out. Either OCR failed or the pages genuinely carry no text. Page images are still stored and viewable; the chatbot just cannot search them. Never re-claimed automatically, so it will not loop.\n\nUntil 24 Aug these landed as 'done' with zero chunks, so seven real governance documents looked ingested but were invisible to search. OCR Page Text now uses its error output: failures are written to fc_kb_errors and the file becomes 'no_text'.\n\nFind anything unsearchable with:\n  SELECT file_name FROM fc_kb_queue WHERE status = 'no_text';\nTo retry one, set it back to 'pending'.\n\nThe queue is filled by \"Family Council v2 - KB Ingestion (Google Drive)\" (the crawler). Check progress with: SELECT status, count(*) FROM fc_kb_queue GROUP BY status;",
+        "height": 620,
+        "width": 300,
+        "color": 6
+      },
+      "id": "feaa07fe-f009-40c7-9592-760dc10ac6f9",
+      "name": "Sticky Note fe291270",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -1408,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  count(*) FILTER (WHERE status = 'pending')::int AS pending,\n  count(*) FILTER (WHERE status = 'processing')::int AS processing_now,\n  count(*) FILTER (WHERE status = 'done')::int AS done,\n  count(*) FILTER (WHERE status = 'skipped')::int AS skipped,\n  count(*) FILTER (WHERE status = 'no_text')::int AS no_text,\n  count(*)::int AS total\nFROM fc_kb_queue;",
+        "options": {}
+      },
+      "id": "cf402a10-5538-4623-bad9-766e9e05ed12",
+      "name": "Check Remaining",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -288,
+        -48
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.pending }}",
+              "operator": {
+                "operation": "equals",
+                "type": "number"
+              },
+              "rightValue": 0
+            },
+            {
+              "id": "c2",
+              "leftValue": "={{ $json.processing_now }}",
+              "operator": {
+                "operation": "equals",
+                "type": "number"
+              },
+              "rightValue": 0
+            }
+          ],
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          }
+        },
+        "options": {}
+      },
+      "id": "4d4bdc10-1805-4174-8f4d-435931aa1811",
+      "name": "Backfill Complete?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -64,
+        -48
+      ]
+    },
+    {
+      "parameters": {
+        "toRecipients": "helpdesk@stjoseph-group.com",
+        "subject": "=✅ Family Council KB sync complete — {{ $json.done }} files ingested",
+        "bodyContent": "={{ '<h2>✅ Family Council Knowledge Base sync complete</h2>' + '<p>All queued Google Drive files have been processed and embedded into the chatbot knowledge base.</p>' + '<ul>' + '<li><b>Total files:</b> ' + $json.total + '</li>' + '<li><b>Successfully ingested:</b> ' + $json.done + '</li>' + '<li><b>Skipped (unsupported type):</b> ' + $json.skipped + '</li>' + '<li><b>No searchable text:</b> ' + $json.no_text + ($json.no_text > 0 ? ' — scanned pages where OCR found nothing. The images are stored and viewable, but the chatbot cannot search or quote them. List with: SELECT file_name FROM fc_kb_queue WHERE status = \\'no_text\\';' : '') + '</li>' + '</ul>' + '<p>The chatbot at fc.stjoseph-group.com can now answer questions from the full archive.</p>' + '<p style=\"color:#888;font-size:12px\">Sent automatically by the n8n workflow \"Family Council v2 - KB File Processor\". Detailed status: run the \"Family Council v2 - KB Queue Status\" workflow.</p>' }}",
+        "additionalFields": {
+          "importance": "Normal",
+          "bodyContentType": "html"
+        }
+      },
+      "id": "c478115a-ce0c-4217-9e6a-acc5c158dfcc",
+      "name": "Send Completion Email",
+      "type": "n8n-nodes-base.microsoftOutlook",
+      "typeVersion": 2,
+      "position": [
+        160,
+        -48
+      ],
+      "webhookId": "REDACTED",
+      "credentials": {
+        "microsoftOutlookOAuth2Api": {
+          "id": "REDACTED",
+          "name": "Microsoft Outlook account helpdesk"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "ht1",
+              "leftValue": "={{ $json.noText === true }}",
+              "operator": {
+                "operation": "true",
+                "singleValue": true,
+                "type": "boolean"
+              },
+              "rightValue": ""
+            }
+          ],
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          }
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "c1e8a088-c8ec-4a72-96ab-7af43692fdba",
+      "name": "Has Extractable Text?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1504,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://v2.convertapi.com/convert/doc/to/pdf",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/octet-stream"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "File",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "99b5dc74-1c6b-44b8-8875-879d400c9966",
+      "name": "ConvertAPI doc to PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        160,
+        144
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "REDACTED",
+          "name": "ConvertAPI - Family Council (convert to PDF)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Image file (png/jpg): store it as base64 so the chatbot can display it\nconst meta = $('Current File').first().json;\nconst item = $input.first();\nconst mime = (item.binary && item.binary.data && item.binary.data.mimeType) || 'image/png';\nconst buf = await this.helpers.getBinaryDataBuffer(0, 'data');\nreturn [{ json: {\n  file_id: meta.fileId,\n  page: 1,\n  file_name: meta.fileName,\n  mime_type: mime,\n  access: meta.access || 'public',\n  image_base64: buf.toString('base64')\n} }];"
+      },
+      "id": "18e4931f-cd77-4fa7-9300-5d4bd1ccd312",
+      "name": "Store Image File",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2176,
+        1344
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO fc_kb_images (file_id, page, file_name, mime_type, access, image_base64)\nSELECT $1, $2, $3, $4, $5, $6 WHERE COALESCE($6,'') <> ''\nON CONFLICT (file_id, page) DO UPDATE\nSET file_name = excluded.file_name, mime_type = excluded.mime_type, access = excluded.access, image_base64 = excluded.image_base64;",
+        "options": {
+          "queryReplacement": "={{ [ $json.file_id, $json.page, $json.file_name, $json.mime_type, $json.access, $json.image_base64 ] }}"
+        }
+      },
+      "id": "7614a759-14d0-4f79-acee-950f61b62b7c",
+      "name": "Insert KB Image",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        2400,
+        1248
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Scanned PDF (no text layer): re-attach the PDF binary so it can be converted to page images\nreturn [{ json: $input.first().json, binary: $('Force PDF Metadata').first().binary }];"
+      },
+      "id": "c389e4ce-38eb-4bf3-bc27-1bdb004fdb69",
+      "name": "Attach PDF Binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1728,
+        1072
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://v2.convertapi.com/convert/pdf/to/jpg",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBearerAuth",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "File",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "PageRange",
+              "value": "1-6"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "ce6b762e-803b-4125-89fe-702b4ef1d9c5",
+      "name": "Convert Scan Pages to JPG",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1952,
+        1072
+      ],
+      "credentials": {
+        "httpBearerAuth": {
+          "id": "REDACTED",
+          "name": "ConvertAPI - Family Council (convert to PDF)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse ConvertAPI JSON response: Files[] with base64 FileData per page\nconst meta = $('Current File').first().json;\nconst resp = $input.first().json || {};\nconst files = Array.isArray(resp.Files) ? resp.Files : [];\nconst out = [];\nlet page = 1;\nfor (const f of files.slice(0, 6)) {\n  if (!f || !f.FileData) continue;\n  out.push({ json: {\n    file_id: meta.fileId,\n    page: page,\n    file_name: meta.fileName,\n    mime_type: 'image/jpeg',\n    access: meta.access || 'public',\n    image_base64: f.FileData\n  } });\n  page++;\n}\nif (out.length === 0) {\n  // Nothing converted - emit a no-op row (Insert skips empty image_base64)\n  return [{ json: { file_id: meta.fileId, page: 1, file_name: meta.fileName, mime_type: 'image/jpeg', access: meta.access || 'public', image_base64: '' } }];\n}\nreturn out;"
+      },
+      "id": "f8444474-7c99-4c34-8511-9e05fb6ecd21",
+      "name": "Store Scan Page Images",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2176,
+        1072
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Collect the stored page images for the CURRENT file and turn them into binary items for Gemini OCR\nconst cur = $('Current File').first().json;\nfunction rowsFrom(name) {\n  try {\n    return $(name).all().map(i => i.json || {}).filter(r => r.file_id === cur.fileId && r.image_base64);\n  } catch (e) { return []; }\n}\nlet rows = rowsFrom('Store Scan Page Images');\nif (!rows.length) rows = rowsFrom('Store Image File');\nrows = rows.slice(0, 6);\nif (!rows.length) {\n  return [{ json: { noImages: true } }];\n}\nconst out = [];\nfor (const r of rows) {\n  const bin = await this.helpers.prepareBinaryData(Buffer.from(r.image_base64, 'base64'), 'page-' + r.page + '.jpg', r.mime_type || 'image/jpeg');\n  out.push({ json: { page: r.page, noImages: false }, binary: { data: bin } });\n}\nreturn out;"
+      },
+      "id": "9c6c2e37-876f-49b3-bef9-e39d06983abe",
+      "name": "OCR Gather Images",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2624,
+        1248
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "oi1",
+              "leftValue": "={{ $json.noImages === true }}",
+              "operator": {
+                "operation": "true",
+                "singleValue": true,
+                "type": "boolean"
+              },
+              "rightValue": ""
+            }
+          ],
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          }
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "5838ebd4-dad5-40a3-bb12-d77b5bdc1f6e",
+      "name": "Any Images To OCR?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2848,
+        1248
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "You are an OCR engine. Transcribe ALL text visible in the attached scanned document page image, exactly as written. Preserve the reading order. Include headings, names, dates, amounts, table contents, titles/positions, and the printed names in signature blocks. Format tables as plain rows of text. Output ONLY the transcribed text with no commentary, no introduction, and no markdown code fences. If the page contains no readable text, output nothing.",
+        "messages": {
+          "messageValues": [
+            {
+              "type": "HumanMessagePromptTemplate",
+              "messageType": "imageBinary",
+              "imageDetail": "high"
+            }
+          ]
+        },
+        "batching": {
+          "batchSize": 2,
+          "delayBetweenBatches": 0
+        }
+      },
+      "id": "c02ad421-e390-43e2-8072-161c41290757",
+      "name": "OCR Page Text",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        3072,
+        1120
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "projectId": {
+          "__rl": true,
+          "value": "GCP_PROJECT_REDACTED",
+          "mode": "id"
+        },
+        "options": {
+          "temperature": 0,
+          "thinkingBudget": 0
+        }
+      },
+      "id": "16a9e261-86a9-461c-a458-e7acef259c1b",
+      "name": "OCR Vertex Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleVertex",
+      "typeVersion": 1,
+      "position": [
+        3152,
+        1360
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "REDACTED",
+          "name": "Google Service Account Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Join per-page OCR text, then chunk it exactly like the normal text pipeline\nconst cur = $('Current File').first().json;\nconst pages = $input.all().map(i => i.json || {});\nlet full = pages.map((p, idx) => {\n  const t = ((p.text || p.output || p.response || '') + '').trim();\n  return t ? '[Page ' + (idx + 1) + ']\\n' + t : '';\n}).filter(Boolean).join('\\n\\n').trim();\n\nif (full.length < 40) {\n  // Photo/image with no meaningful text - image is stored, nothing to index\n  return [{ json: { noOcr: true } }];\n}\n\nfull = 'OCR transcription of scanned document: ' + (cur.fileName || '') + '\\n\\n' + full;\n\n// Access is decided by the Drive folder name in 'Current File', same as the\n// normal text pipeline. The OCR'd content is not consulted.\nconst access = cur.access || 'public';\n\n// Kept in step with 'Chunk KB Text'. See the note there: chunk count drives\n// embedding calls, and large files were exhausting the Vertex per-minute quota.\nconst chunkSize = 2500, overlap = 300;\nconst out = [];\nlet start = 0, chunkIndex = 1;\nwhile (start < full.length) {\n  let end = start + chunkSize;\n  if (end < full.length) {\n    const ls = full.lastIndexOf(' ', end);\n    if (ls > start + 1250) end = ls;\n  }\n  const chunk = full.slice(start, end).trim();\n  if (chunk.length > 0) {\n    out.push({ json: { text: chunk, chunkIndex, fileId: cur.fileId, fileName: cur.fileName, access } });\n  }\n  if (end >= full.length) break;\n  start = end - overlap;\n  chunkIndex++;\n}\nif (!out.length) return [{ json: { noOcr: true } }];\nreturn out;"
+      },
+      "id": "039016be-d683-420d-aec8-ee27a27d8afc",
+      "name": "Combine OCR Chunks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3424,
+        1120
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "ho1",
+              "leftValue": "={{ $json.noOcr === true }}",
+              "operator": {
+                "operation": "true",
+                "singleValue": true,
+                "type": "boolean"
+              },
+              "rightValue": ""
+            }
+          ],
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          }
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "58a9da27-d819-4bbd-a04a-f5e92bb21d6c",
+      "name": "Has OCR Text?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3648,
+        1120
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "DELETE FROM fc_kb_vectors WHERE metadata->>'fileId' = $1;",
+        "options": {
+          "queryReplacement": "={{ [ $('Current File').first().json.fileId ] }}"
+        }
+      },
+      "id": "06c14851-f302-4926-a3a0-057a1a08f355",
+      "name": "Delete Old OCR Chunks",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        3872,
+        992
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Re-emit the OCR chunk items (the delete node swallowed them)\nreturn $('Combine OCR Chunks').all().filter(i => !(i.json && i.json.noOcr === true));"
+      },
+      "id": "7e323ab8-6d5a-4ff7-852f-ead244d30445",
+      "name": "Reload OCR Chunks",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4096,
+        992
+      ]
+    },
+    {
+      "id": "efa53bac-0c55-46f5-a8ef-3ac6bf3be8b8",
+      "name": "Embed Batch Loop",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        3900,
+        560
+      ],
+      "parameters": {
+        "batchSize": 3,
+        "options": {}
+      }
+    },
+    {
+      "id": "1ac68752-dc1d-4799-a53c-1ece0424e433",
+      "name": "Wait For Quota Window",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        4560,
+        400
+      ],
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": 65,
+        "unit": "seconds"
+      },
+      "webhookId": "REDACTED"
+    },
+    {
+      "id": "cbe1897d-7149-4b1e-8c53-5ecb71b43732",
+      "name": "Log OCR Failure",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        3424,
+        1408
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO fc_kb_errors (occurred_at, workflow_name, execution_id, last_node, message, file_name)\nVALUES (now(), 'Family Council v2 - KB File Processor', $1, 'OCR Page Text', $2, $3);",
+        "options": {
+          "queryReplacement": "={{ [ String($execution.id), String((($json.error && ($json.error.message || $json.error.description)) || $json.message || 'OCR failed with no message')).slice(0, 500), $('Current File').first().json.fileName ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      },
+      "notes": "OCR failures used to vanish silently and the file was marked done with no chunks. Now every failure leaves a row in fc_kb_errors."
+    },
+    {
+      "id": "3c92cfb8-af38-41ba-b661-7d37b98df8b6",
+      "name": "Mark File No Text",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        3872,
+        1408
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Deliberately NOT 'done'. These files produced no searchable text, either\n-- because OCR failed or because the pages genuinely carry none. Marking them\n-- done hid seven real documents in plain sight. 'no_text' is never re-claimed\n-- by Claim Pending Files, so this does not loop, but it is visible with:\n--   SELECT file_name FROM fc_kb_queue WHERE status = 'no_text';\nUPDATE fc_kb_queue SET status = 'no_text', updated_at = now() WHERE file_id = $1;",
+        "options": {
+          "queryReplacement": "={{ [ $('Current File').first().json.fileId ] }}"
+        }
+      },
+      "credentials": {
+        "postgres": {
+          "id": "REDACTED",
+          "name": "Postgres Family Council"
+        }
+      },
+      "notes": "Stored page images are still kept, so the chatbot can show these files even though it cannot search their contents.",
+      "executeOnce": true
+    },
+    {
+      "id": "78f95b6e-91a8-44c4-9bbf-ac78e6b6d418",
+      "name": "KB Text Splitter",
+      "type": "@n8n/n8n-nodes-langchain.textSplitterRecursiveCharacterTextSplitter",
+      "typeVersion": 1,
+      "position": [
+        4608,
+        1008
+      ],
+      "parameters": {
+        "chunkSize": 4000,
+        "chunkOverlap": 0
+      },
+      "notes": "Exists only to STOP the loader's default 1000/200 splitter. Text arrives pre-chunked at 2500 with 300 overlap from Chunk KB Text / Combine OCR Chunks; 4000 with no overlap lets it through untouched. Do not lower this below 2500 or the pre-chunking is silently undone again."
+    }
+  ],
+  "connections": {
+    "Claim Pending Files": {
+      "main": [
+        [
+          {
+            "node": "Any Files Claimed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Processor Now": {
+      "main": [
+        [
+          {
+            "node": "Claim Pending Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Files Claimed?": {
+      "main": [
+        [
+          {
+            "node": "Process One File Loop",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Queue Empty",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Current File": {
+      "main": [
+        [
+          {
+            "node": "Download KB File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download KB File": {
+      "main": [
+        [
+          {
+            "node": "Route by File Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by File Type": {
+      "main": [
+        [
+          {
+            "node": "ConvertAPI docx to PDF",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ConvertAPI xlsx to PDF",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ConvertAPI xls to PDF",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ConvertAPI pptx to PDF",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Force PDF Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ConvertAPI doc to PDF",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Store Image File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Store Image File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark File Skipped",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ConvertAPI docx to PDF": {
+      "main": [
+        [
+          {
+            "node": "Force PDF Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Force PDF Metadata": {
+      "main": [
+        [
+          {
+            "node": "Extract PDF Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ConvertAPI xlsx to PDF": {
+      "main": [
+        [
+          {
+            "node": "Force PDF Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ConvertAPI xls to PDF": {
+      "main": [
+        [
+          {
+            "node": "Force PDF Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ConvertAPI pptx to PDF": {
+      "main": [
+        [
+          {
+            "node": "Force PDF Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark File Skipped": {
+      "main": [
+        [
+          {
+            "node": "Process One File Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process One File Loop": {
+      "main": [
+        [
+          {
+            "node": "Processor Finished",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Current File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract PDF Text": {
+      "main": [
+        [
+          {
+            "node": "Normalize Extracted Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Extracted Text": {
+      "main": [
+        [
+          {
+            "node": "Delete Old Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Old Chunks": {
+      "main": [
+        [
+          {
+            "node": "Chunk KB Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embeddings Google Vertex": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Store KB Chunks",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "KB Document Loader": {
+      "ai_document": [
+        [
+          {
+            "node": "Store KB Chunks",
+            "type": "ai_document",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark File Done": {
+      "main": [
+        [
+          {
+            "node": "Process One File Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Processor Finished": {
+      "main": [
+        [
+          {
+            "node": "Check Remaining",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Remaining": {
+      "main": [
+        [
+          {
+            "node": "Backfill Complete?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Backfill Complete?": {
+      "main": [
+        [
+          {
+            "node": "Send Completion Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chunk KB Text": {
+      "main": [
+        [
+          {
+            "node": "Has Extractable Text?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Extractable Text?": {
+      "main": [
+        [
+          {
+            "node": "Attach PDF Binary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Embed Batch Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ConvertAPI doc to PDF": {
+      "main": [
+        [
+          {
+            "node": "Force PDF Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Image File": {
+      "main": [
+        [
+          {
+            "node": "Insert KB Image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach PDF Binary": {
+      "main": [
+        [
+          {
+            "node": "Convert Scan Pages to JPG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert Scan Pages to JPG": {
+      "main": [
+        [
+          {
+            "node": "Store Scan Page Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Scan Page Images": {
+      "main": [
+        [
+          {
+            "node": "Insert KB Image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert KB Image": {
+      "main": [
+        [
+          {
+            "node": "OCR Gather Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OCR Gather Images": {
+      "main": [
+        [
+          {
+            "node": "Any Images To OCR?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Images To OCR?": {
+      "main": [
+        [
+          {
+            "node": "Mark File No Text",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "OCR Page Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OCR Vertex Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "OCR Page Text",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OCR Page Text": {
+      "main": [
+        [
+          {
+            "node": "Combine OCR Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log OCR Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combine OCR Chunks": {
+      "main": [
+        [
+          {
+            "node": "Has OCR Text?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has OCR Text?": {
+      "main": [
+        [
+          {
+            "node": "Mark File No Text",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Delete Old OCR Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Old OCR Chunks": {
+      "main": [
+        [
+          {
+            "node": "Reload OCR Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every 15 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Claim Pending Files",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reload OCR Chunks": {
+      "main": [
+        [
+          {
+            "node": "Embed Batch Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embed Batch Loop": {
+      "main": [
+        [
+          {
+            "node": "Mark File Done",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Store KB Chunks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store KB Chunks": {
+      "main": [
+        [
+          {
+            "node": "Wait For Quota Window",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait For Quota Window": {
+      "main": [
+        [
+          {
+            "node": "Embed Batch Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log OCR Failure": {
+      "main": [
+        [
+          {
+            "node": "Mark File No Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark File No Text": {
+      "main": [
+        [
+          {
+            "node": "Process One File Loop",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "KB Text Splitter": {
+      "ai_textSplitter": [
+        [
+          {
+            "node": "KB Document Loader",
+            "type": "ai_textSplitter",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true,
+    "binaryMode": "separate",
+    "executionTimeout": 3600,
+    "errorWorkflow": "8MeUG6bYrnPrmZLv"
+  },
+  "pinData": {}
+}
