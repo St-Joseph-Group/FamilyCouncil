@@ -5,6 +5,7 @@ import { postToWebhookProxy, fetchActiveWebhook } from '../../lib/webhookProxy';
 import { useAuth } from '../../contexts/AuthContext';
 import { logAuditEvent } from '../../lib/audit';
 import { imageFromClipboard, uploadChatAttachment, isImageAttachment, UploadedAttachment } from '../../lib/chatAttachments';
+import { formatDaySeparator, formatFullTimestamp, formatMessageTimestamp, formatListTimestamp, isSameDay } from '../../lib/chatTime';
 import ConfirmModal from '../ConfirmModal';
 import AccessRequestModal from '../AccessRequestModal';
 import ImageLightbox from './ImageLightbox';
@@ -43,35 +44,9 @@ function extractReply(data: Record<string, unknown>): string | null {
   return null;
 }
 
-function formatMessageTime(dateStr: string) {
-  const d = new Date(dateStr);
-  const now = new Date();
-  const isToday = d.toDateString() === now.toDateString();
-  const yesterday = new Date(now);
-  yesterday.setDate(yesterday.getDate() - 1);
-  const isYesterday = d.toDateString() === yesterday.toDateString();
-
-  const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-
-  if (isToday) return time;
-  if (isYesterday) return `Yesterday ${time}`;
-  return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${time}`;
-}
-
 function stripHtml(html: string): string {
   const doc = new DOMParser().parseFromString(html, 'text/html');
   return doc.body.textContent || '';
-}
-
-function formatListTime(dateStr: string) {
-  const d = new Date(dateStr);
-  const now = new Date();
-  const isToday = d.toDateString() === now.toDateString();
-  if (isToday) return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-  const yesterday = new Date(now);
-  yesterday.setDate(yesterday.getDate() - 1);
-  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 // No url: the proxy resolves the endpoint itself from the id, so the browser
@@ -562,7 +537,7 @@ export default function FloatingChatbox() {
                                     Council Assistant
                                   </p>
                                   <span className="text-slate-500 text-xs flex-shrink-0">
-                                    {convo.lastMessage ? formatListTime(convo.lastMessage.created_at) : formatListTime(convo.created_at)}
+                                    {convo.lastMessage ? formatListTimestamp(convo.lastMessage.created_at) : formatListTimestamp(convo.created_at)}
                                   </span>
                                 </div>
                                 <p className="text-slate-400 text-xs truncate mt-0.5">
@@ -603,7 +578,7 @@ export default function FloatingChatbox() {
                       <p className="text-white text-xs font-medium">Council Assistant</p>
                       <p className="text-slate-500 text-[10px] flex items-center gap-1">
                         <Clock className="w-2.5 h-2.5" />
-                        {activeConversation ? formatListTime(activeConversation.created_at) : ''}
+                        {activeConversation ? formatListTimestamp(activeConversation.created_at) : ''}
                       </p>
                     </div>
                     <button
@@ -636,11 +611,22 @@ export default function FloatingChatbox() {
                         <p className="text-slate-600 text-xs">Type a message below</p>
                       </div>
                     ) : (
-                      messages.map((msg) => {
+                      messages.map((msg, index) => {
                         const isSystem = msg.sender_id === 'system';
+                        const previous = index > 0 ? messages[index - 1] : null;
+                        const startsNewDay = !previous || !isSameDay(previous.created_at, msg.created_at);
                         return (
+                          <React.Fragment key={msg.id}>
+                          {startsNewDay && (
+                            <div className="flex items-center gap-2 py-0.5">
+                              <div className="flex-1 h-px bg-white/5" />
+                              <span className="text-slate-400 text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-800 border border-white/5 whitespace-nowrap">
+                                {formatDaySeparator(msg.created_at)}
+                              </span>
+                              <div className="flex-1 h-px bg-white/5" />
+                            </div>
+                          )}
                           <div
-                            key={msg.id}
                             className={`flex gap-2 ${msg.sender_type === 'admin' ? 'flex-row-reverse' : 'flex-row'}`}
                           >
                             <div className={`w-6 h-6 rounded-full flex-shrink-0 flex items-center justify-center ${
@@ -689,7 +675,9 @@ export default function FloatingChatbox() {
                                 )}
                               </div>
                               <div className={`flex items-center gap-1 ${msg.sender_type === 'admin' ? 'flex-row-reverse' : ''}`}>
-                                <span className="text-slate-600 text-[10px]">{formatMessageTime(msg.created_at)}</span>
+                                <span className="text-slate-600 text-[10px]" title={formatFullTimestamp(msg.created_at)}>
+                                  {formatMessageTimestamp(msg.created_at)}
+                                </span>
                                 {!isSystem && (
                                   <button
                                     onClick={() => attemptDelete(msg)}
@@ -702,6 +690,7 @@ export default function FloatingChatbox() {
                               </div>
                             </div>
                           </div>
+                          </React.Fragment>
                         );
                       })
                     )}

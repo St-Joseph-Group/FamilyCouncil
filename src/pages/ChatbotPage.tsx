@@ -5,6 +5,7 @@ import { postToWebhookProxy, fetchActiveWebhook } from '../lib/webhookProxy';
 import { useAuth } from '../contexts/AuthContext';
 import { logAuditEvent } from '../lib/audit';
 import { imageFromClipboard, uploadChatAttachment, isImageAttachment, UploadedAttachment } from '../lib/chatAttachments';
+import { formatDaySeparator, formatFullTimestamp, formatMessageTimestamp, isSameDay } from '../lib/chatTime';
 import ConfirmModal from '../components/ConfirmModal';
 import AccessRequestModal from '../components/AccessRequestModal';
 import ImageLightbox from '../components/chatbot/ImageLightbox';
@@ -484,9 +485,6 @@ export default function ChatbotPage() {
     })();
   }
 
-  function formatTime(ts: string) {
-    return new Date(ts).toLocaleTimeString('en', { hour: '2-digit', minute: '2-digit' });
-  }
 
   return (
     <div className="page-fill-viewport flex gap-4">
@@ -664,11 +662,24 @@ export default function ChatbotPage() {
                   )}
                 </div>
               ) : (
-                messages.map((msg) => {
+                messages.map((msg, index) => {
                   const isSystem = msg.sender_id === 'system';
+                  // Each new day in the thread gets a heading, so the bare time
+                  // under a bubble is never ambiguous about which day it means.
+                  const previous = index > 0 ? messages[index - 1] : null;
+                  const startsNewDay = !previous || !isSameDay(previous.created_at, msg.created_at);
                   return (
+                    <React.Fragment key={msg.id}>
+                    {startsNewDay && (
+                      <div className="flex items-center gap-3 py-1">
+                        <div className="flex-1 h-px bg-white/5" />
+                        <span className="text-slate-400 text-[11px] font-medium px-2.5 py-1 rounded-full bg-slate-800 border border-white/5 whitespace-nowrap">
+                          {formatDaySeparator(msg.created_at)}
+                        </span>
+                        <div className="flex-1 h-px bg-white/5" />
+                      </div>
+                    )}
                     <div
-                      key={msg.id}
                       className={`flex gap-3 group ${msg.sender_type === 'admin' ? 'flex-row-reverse' : 'flex-row'}`}
                     >
                       <div className={`w-7 h-7 rounded-full flex-shrink-0 flex items-center justify-center ${
@@ -717,7 +728,9 @@ export default function ChatbotPage() {
                           )}
                         </div>
                         <div className={`flex items-center gap-2 ${msg.sender_type === 'admin' ? 'flex-row-reverse' : 'flex-row'}`}>
-                          <span className="text-slate-600 text-xs px-1">{formatTime(msg.created_at)}</span>
+                          <span className="text-slate-600 text-xs px-1" title={formatFullTimestamp(msg.created_at)}>
+                            {formatMessageTimestamp(msg.created_at)}
+                          </span>
                           {!isSystem && (
                             <button
                               onClick={() => {
@@ -733,6 +746,7 @@ export default function ChatbotPage() {
                         </div>
                       </div>
                     </div>
+                    </React.Fragment>
                   );
                 })
               )}
